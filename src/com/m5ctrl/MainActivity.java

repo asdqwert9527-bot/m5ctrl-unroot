@@ -1,0 +1,80 @@
+package com.m5ctrl;
+
+import android.content.Context;
+import android.hardware.display.DisplayManager;
+import android.os.Bundle;
+import android.os.IBinder;
+import android.util.Log;
+import android.widget.Button;
+import android.widget.Toast;
+import androidx.appcompat.app.AppCompatActivity;
+import rikka.shizuku.Shizuku;
+import android.hardware.display.IDisplayManager;
+
+public class MainActivity extends AppCompatActivity {
+    private boolean mScreenOffState = false;
+    private DisplayManager.DisplayListener mDisplayListener;
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        setContentView(R.layout.main);
+        Button btnOff = findViewById(R.id.btn_screen_off);
+        Button btnOn = findViewById(R.id.btn_screen_on);
+
+        btnOff.setOnClickListener(v -> turnOffInternalScreen());
+        btnOn.setOnClickListener(v -> turnOnInternalScreen());
+
+        mDisplayListener = new DisplayManager.DisplayListener() {
+            @Override
+            public void onDisplayAdded(int displayId) {}
+            @Override
+            public void onDisplayRemoved(int displayId) {
+                if (displayId == 20 && mScreenOffState) {
+                    runOnUiThread(() -> {
+                        turnOnInternalScreen();
+                        Toast.makeText(MainActivity.this, "眼镜拔出，恢复手机屏幕", Toast.LENGTH_SHORT).show();
+                    });
+                }
+            }
+            @Override
+            public void onDisplayChanged(int displayId) {}
+        };
+        DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+        dm.registerDisplayListener(mDisplayListener, null);
+    }
+
+    private void turnOffInternalScreen() {
+        if (Shizuku.getVersion() < 11) {
+            Toast.makeText(this, "需要Shizuku v11+", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            IBinder b = Shizuku.getBinder();
+            IDisplayManager dm = IDisplayManager.Stub.asInterface(b);
+            dm.setDisplayPowerMode(0,0);
+            mScreenOffState = true;
+            Toast.makeText(this,"已关闭手机内置屏，眼镜继续工作",Toast.LENGTH_SHORT).show();
+        }catch (Exception e){
+            Log.e("M5","关闭屏幕异常",e);
+            Toast.makeText(this,"调用失败："+e.getMessage(),Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void turnOnInternalScreen() {
+        if (Shizuku.getVersion() < 11) {
+            Toast.makeText(this, "需要Shizuku v11+", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            IBinder b = Shizuku.getBinder();
+            IDisplayManager dm = IDisplayManager.Stub.asInterface(b);
+            dm.setDisplayPowerMode(0,2);
+            mScreenOffState = false;
+            Toast.makeText(this,"已恢复手机屏幕",Toast.LENGTH_SHORT).show();
+        }catch (Exception e){
+            Log.e("M5","点亮屏幕异常",e);
+            Toast.makeText(this,"调用失败："+e.getMessage(),Toast.LENGTH_LONG).show();
+        }
+    }
+}
