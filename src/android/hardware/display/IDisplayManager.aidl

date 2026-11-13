@@ -1,0 +1,5 @@
+package android.hardware.display;
+
+interface IDisplayManager {
+    void setDisplayPowerMode(int displayId, int mode);
+}
