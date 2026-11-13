@@ -27,7 +27,6 @@ jobs:
           rm -rf $WORK_DIR/src $WORK_DIR/res $WORK_DIR/AndroidManifest.xml $WORK_DIR/libs
           mkdir -p $WORK_DIR/src/com/m5ctrl $WORK_DIR/res/values $WORK_DIR/libs
 
-          # 官方三件套依赖 api + aidl + provider
           for a in api aidl provider; do
             wget -q -O $WORK_DIR/libs/shizuku-$a.aar \
               https://repo1.maven.org/maven2/dev/rikka/shizuku/$a/13.1.5/$a-13.1.5.aar
@@ -164,14 +163,9 @@ jobs:
                   }
               }
 
-              private void append(final String s) {
+              private void append(String s) {
                   Log.i(TAG, s);
-                  runOnUiThread(new Runnable() {
-                      @Override
-                      public void run() {
-                          mLog.append(s + "\n");
-                      }
-                  });
+                  mLog.append(s + "\n");
               }
 
               @Override
@@ -363,31 +357,23 @@ jobs:
           mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
 
           yes 2>/dev/null | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "platforms;android-33" "build-tools;34.0.0"
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-33" "build-tools;34.0.0"
 
           AJ=$ANDROID_HOME/platforms/android-33/android.jar
 
           echo "=== aapt 打包 ==="
-          $BUILD_TOOLS/aapt package -f \
-            -M $WORK_DIR/AndroidManifest.xml \
-            -S $WORK_DIR/res \
-            -I $AJ \
-            -F $BUILD_DIR/base.apk
+          $BUILD_TOOLS/aapt package -f -M $WORK_DIR/AndroidManifest.xml -S $WORK_DIR/res -I $AJ -F $BUILD_DIR/base.apk
 
           echo "=== javac 编译 ==="
           mkdir -p $BUILD_DIR/classes
-          javac -source 1.8 -target 1.8 \
-            -bootclasspath $AJ \
+          javac -source 1.8 -target 1.8 -bootclasspath $AJ \
             -classpath "$WORK_DIR/libs/shizuku-api.jar:$WORK_DIR/libs/shizuku-aidl.jar:$WORK_DIR/libs/shizuku-provider.jar" \
-            -d $BUILD_DIR/classes \
-            $WORK_DIR/src/com/m5ctrl/*.java
+            -d $BUILD_DIR/classes $WORK_DIR/src/com/m5ctrl/*.java
+          ls -l $BUILD_DIR/classes/com/m5ctrl/
 
-          echo "=== d8 脱糖（关键：不加 --no-desugaring）==="
+          echo "=== d8 脱糖 ==="
           mkdir -p $BUILD_DIR/dex
-          $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
-            --min-api 24 \
-            --lib $AJ \
+          $BUILD_TOOLS/d8 --output $BUILD_DIR/dex --min-api 24 --lib $AJ \
             $BUILD_DIR/classes/com/m5ctrl/*.class \
             $WORK_DIR/libs/shizuku-api.jar \
             $WORK_DIR/libs/shizuku-aidl.jar \
@@ -399,18 +385,11 @@ jobs:
           cd $WORK_DIR
 
           echo "=== 签名 ==="
-          keytool -genkey -keystore $WORK_DIR/test.keystore -alias test \
-            -keyalg RSA -keysize 2048 \
-            -storepass 123456 -keypass 123456 \
-            -dname "CN=test" -noprompt 2>/dev/null
-
-          $BUILD_TOOLS/apksigner sign \
-            --ks $WORK_DIR/test.keystore \
-            --ks-key-alias test \
-            --ks-pass pass:123456 \
-            --key-pass pass:123456 \
-            --out $WORK_DIR/m5ctrl-unroot.apk \
-            $BUILD_DIR/base.apk
+          keytool -genkey -keystore $WORK_DIR/test.keystore -alias test -keyalg RSA -keysize 2048 \
+            -storepass 123456 -keypass 123456 -dname "CN=test" -noprompt 2>/dev/null
+          $BUILD_TOOLS/apksigner sign --ks $WORK_DIR/test.keystore --ks-key-alias test \
+            --ks-pass pass:123456 --key-pass pass:123456 \
+            --out $WORK_DIR/m5ctrl-unroot.apk $BUILD_DIR/base.apk
 
           ls -lh $WORK_DIR/m5ctrl-unroot.apk
 
