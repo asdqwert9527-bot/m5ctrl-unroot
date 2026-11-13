@@ -14,7 +14,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y unzip curl wget openjdk-17-jdk
+          sudo apt-get install -y unzip wget openjdk-17-jdk
 
       - name: Build APK
         run: |
@@ -99,7 +99,7 @@ jobs:
               <string name="app_name">M5Ctrl</string>
           </resources>' > $WORK_DIR/res/values/strings.xml
 
-          # 生成 MainActivity.java
+          # 生成 MainActivity.java（反射调用Shizuku，零外部依赖）
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -109,25 +109,28 @@ jobs:
           import android.util.Log;
           import android.widget.Button;
           import android.widget.Toast;
-          import rikka.shizuku.Shizuku;
-          import android.hardware.display.IDisplayManager;
+          import java.lang.reflect.Method;
           public class MainActivity extends Activity {
               private boolean mScreenOffState = false;
               private DisplayManager.DisplayListener mDisplayListener;
+              private static final int POWER_MODE_OFF = 0;
+              private static final int POWER_MODE_NORMAL = 2;
+
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
                   setContentView(R.layout.main);
                   Button btnOff = findViewById(R.id.btn_screen_off);
                   Button btnOn = findViewById(R.id.btn_screen_on);
-                  btnOff.setOnClickListener(v -> turnOffInternalScreen());
-                  btnOn.setOnClickListener(v -> turnOnInternalScreen());
+                  btnOff.setOnClickListener(v -> setDisplayPowerMode(POWER_MODE_OFF));
+                  btnOn.setOnClickListener(v -> setDisplayPowerMode(POWER_MODE_NORMAL));
+
                   mDisplayListener = new DisplayManager.DisplayListener() {
                       @Override public void onDisplayAdded(int displayId) {}
                       @Override public void onDisplayRemoved(int displayId) {
                           if (displayId == 20 && mScreenOffState) {
                               runOnUiThread(() -> {
-                                  turnOnInternalScreen();
+                                  setDisplayPowerMode(POWER_MODE_NORMAL);
                                   Toast.makeText(MainActivity.this, "眼镜拔出，屏幕已恢复", Toast.LENGTH_SHORT).show();
                               });
                           }
@@ -137,31 +140,35 @@ jobs:
                   DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
                   dm.registerDisplayListener(mDisplayListener, null);
               }
-              private void turnOffInternalScreen() {
-                  if (Shizuku.getVersion() < 11) {
-                      Toast.makeText(this, "需要先开启 Shizuku", Toast.LENGTH_SHORT).show();
+
+              private IBinder getShizukuBinder() {
+                  try {
+                      Class<?> clz = Class.forName("rikka.shizuku.Shizuku");
+                      Method method = clz.getMethod("getBinder");
+                      return (IBinder) method.invoke(null);
+                  } catch (Exception e) {
+                      return null;
+                  }
+              }
+
+              private void setDisplayPowerMode(int mode) {
+                  IBinder binder = getShizukuBinder();
+                  if (binder == null) {
+                      Toast.makeText(this, "请先开启 Shizuku", Toast.LENGTH_SHORT).show();
                       return;
                   }
                   try {
-                      IBinder b = Shizuku.getBinder();
-                      IDisplayManager dm = IDisplayManager.Stub.asInterface(b);
-                      dm.setDisplayPowerMode(0, 0);
-                      mScreenOffState = true;
-                      Toast.makeText(this,"手机屏幕已关闭",Toast.LENGTH_SHORT).show();
-                  }catch(Exception e){
-                      Log.e("M5Ctrl","关屏失败",e);
-                      Toast.makeText(this,"失败："+e.getMessage(),Toast.LENGTH_LONG).show();
-                  }
-              }
-              private void turnOnInternalScreen() {
-                  try {
-                      IBinder b = Shizuku.getBinder();
-                      IDisplayManager dm = IDisplayManager.Stub.asInterface(b);
-                      dm.setDisplayPowerMode(0, 2);
-                      mScreenOffState = false;
-                      Toast.makeText(this,"手机屏幕已点亮",Toast.LENGTH_SHORT).show();
-                  }catch(Exception e){
-                      Log.e("M5Ctrl","亮屏失败",e);
+                      Class<?> stubClz = Class.forName("android.hardware.display.IDisplayManager$Stub");
+                      Method asInterface = stubClz.getMethod("asInterface", IBinder.class);
+                      Object dm = asInterface.invoke(null, binder);
+                      Method setMode = dm.getClass().getMethod("setDisplayPowerMode", int.class, int.class);
+                      setMode.invoke(dm, 0, mode);
+                      mScreenOffState = (mode == POWER_MODE_OFF);
+                      String msg = mode == POWER_MODE_OFF ? "手机屏幕已关闭" : "手机屏幕已点亮";
+                      Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+                  } catch (Exception e) {
+                      Log.e("M5Ctrl", "操作失败", e);
+                      Toast.makeText(this, "失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
                   }
               }
           }' > $WORK_DIR/src/com/m5ctrl/MainActivity.java
@@ -177,22 +184,7 @@ jobs:
               public void onInterrupt() {}
           }' > $WORK_DIR/src/com/m5ctrl/M5AccessibilityService.java
 
-          # 1. 多源下载 Shizuku 依赖
-          mkdir -p $WORK_DIR/lib
-          JAR_URL1=https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
-          JAR_URL2=https://maven.aliyun.com/repository/public/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
-          
-          if ! wget -q --tries=3 -O $WORK_DIR/lib/shizuku-api.jar $JAR_URL1; then
-              echo "官方源下载失败，切换阿里云源"
-              wget -q --tries=3 -O $WORK_DIR/lib/shizuku-api.jar $JAR_URL2
-          fi
-
-          # 打印文件信息，排查问题
-          echo "=== 依赖文件信息 ==="
-          ls -lh $WORK_DIR/lib/
-          file $WORK_DIR/lib/shizuku-api.jar
-
-          # 2. 安装 Android SDK 工具
+          # 1. 安装 Android SDK 工具
           mkdir -p $ANDROID_HOME/cmdline-tools
           wget -q -O $WORK_DIR/cmdline-tools.zip \
             https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
@@ -203,32 +195,31 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;33.0.2"
 
-          # 3. 打包资源
+          # 2. 打包资源
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
             -S $WORK_DIR/res \
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 4. 编译 Java 代码
+          # 3. 编译 Java 代码（无外部依赖）
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
-            -cp $WORK_DIR/lib/shizuku-api.jar \
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 5. 生成 DEX
+          # 4. 生成 DEX
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
             --lib $ANDROID_HOME/platforms/android-33/android.jar \
             $BUILD_DIR/classes/com/m5ctrl/*.class
 
-          # 6. 组装 APK
+          # 5. 组装 APK
           cd $BUILD_DIR
           zip -j base.apk dex/classes.dex
           cd $WORK_DIR
 
-          # 7. 签名
+          # 6. 签名
           keytool -genkey -keystore $WORK_DIR/test.keystore -alias test \
             -keyalg RSA -keysize 2048 \
             -storepass 123456 -keypass 123456 \
