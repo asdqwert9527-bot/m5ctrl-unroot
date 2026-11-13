@@ -171,10 +171,10 @@ jobs:
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 5. 编译 Java 代码
+          # 5. 编译 Java 代码（Java 8 + 无Lambda语法）
           echo "编译Java代码..."
           mkdir -p $BUILD_DIR/classes
-          javac -source 1.7 -target 1.7 \
+          javac -source 1.8 -target 1.8 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
