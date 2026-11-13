@@ -16,11 +16,73 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y unzip curl openjdk-17-jdk
 
-      - name: Run build script
+      - name: Build APK
         run: |
-          pwd
-          ls -la
-          bash build.sh
+          export ANDROID_HOME=$PWD/android-sdk
+          export BUILD_DIR=$PWD/build
+          mkdir -p $BUILD_DIR
+
+          # 1. 下载 Shizuku 依赖
+          mkdir -p lib
+          curl -sL -o lib/shizuku-api.jar \
+            https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
+
+          # 2. 安装 Android SDK 工具
+          mkdir -p $ANDROID_HOME/cmdline-tools
+          curl -sL -o cmdline-tools.zip \
+            https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
+          mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+
+          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "platforms;android-33" "build-tools;33.0.2"
+
+          # 3. 编译资源
+          mkdir -p $BUILD_DIR/res
+          $ANDROID_HOME/build-tools/33.0.2/aapt2 compile -o $BUILD_DIR/res/layout.flat res/layout/main.xml
+          $ANDROID_HOME/build-tools/33.0.2/aapt2 compile -o $BUILD_DIR/res/xml.flat res/xml/accessibility.xml
+
+          # 4. 打包资源和清单
+          $ANDROID_HOME/build-tools/33.0.2/aapt2 link -o $BUILD_DIR/base.apk \
+            -I $ANDROID_HOME/platforms/android-33/android.jar \
+            --manifest AndroidManifest.xml \
+            --auto-add-overlay \
+            $BUILD_DIR/res/layout.flat $BUILD_DIR/res/xml.flat
+
+          # 5. 编译 Java 代码
+          mkdir -p $BUILD_DIR/classes
+          javac -source 1.8 -target 1.8 \
+            -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
+            -cp lib/shizuku-api.jar \
+            -d $BUILD_DIR/classes \
+            src/com/m5ctrl/*.java
+
+          # 6. 生成 DEX
+          $ANDROID_HOME/build-tools/33.0.2/d8 --output $BUILD_DIR/dex \
+            --lib $ANDROID_HOME/platforms/android-33/android.jar \
+            $BUILD_DIR/classes/com/m5ctrl/*.class
+
+          # 7. 组装 APK
+          cd $BUILD_DIR
+          zip -j base.apk dex/classes.dex
+          cd ..
+
+          # 8. 签名
+          keytool -genkey -keystore test.keystore -alias test \
+            -keyalg RSA -keysize 2048 \
+            -storepass 123456 -keypass 123456 \
+            -dname "CN=test" -noprompt
+
+          $ANDROID_HOME/build-tools/33.0.2/apksigner sign \
+            --ks test.keystore \
+            --ks-key-alias test \
+            --ks-pass pass:123456 \
+            --key-pass pass:123456 \
+            --out m5ctrl-unroot.apk \
+            $BUILD_DIR/base.apk
+
+          echo "编译完成"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
