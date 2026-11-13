@@ -28,7 +28,7 @@ jobs:
           rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml
           mkdir -p $WORK_DIR/src/com/m5ctrl
 
-          # 1. 生成 AndroidManifest.xml（无自定义资源引用）
+          # 1. 生成 AndroidManifest.xml
           echo '<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.m5ctrl"
@@ -48,7 +48,7 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java（纯代码UI，零资源依赖）
+          # 2. 生成 MainActivity.java（全匿名内部类，无Lambda）
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -56,6 +56,7 @@ jobs:
           import android.os.Bundle;
           import android.os.IBinder;
           import android.util.Log;
+          import android.view.View;
           import android.widget.Button;
           import android.widget.LinearLayout;
           import android.widget.Toast;
@@ -75,11 +76,21 @@ jobs:
 
                   Button btnOff = new Button(this);
                   btnOff.setText("关闭手机屏幕");
-                  btnOff.setOnClickListener(v -> setDisplayPowerMode(POWER_MODE_OFF));
+                  btnOff.setOnClickListener(new View.OnClickListener() {
+                      @Override
+                      public void onClick(View v) {
+                          setDisplayPowerMode(POWER_MODE_OFF);
+                      }
+                  });
 
                   Button btnOn = new Button(this);
                   btnOn.setText("点亮手机屏幕");
-                  btnOn.setOnClickListener(v -> setDisplayPowerMode(POWER_MODE_NORMAL));
+                  btnOn.setOnClickListener(new View.OnClickListener() {
+                      @Override
+                      public void onClick(View v) {
+                          setDisplayPowerMode(POWER_MODE_NORMAL);
+                      }
+                  });
 
                   LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
                       LinearLayout.LayoutParams.MATCH_PARENT,
@@ -97,9 +108,12 @@ jobs:
                       @Override public void onDisplayAdded(int displayId) {}
                       @Override public void onDisplayRemoved(int displayId) {
                           if (displayId == 20 && mScreenOffState) {
-                              runOnUiThread(() -> {
-                                  setDisplayPowerMode(POWER_MODE_NORMAL);
-                                  Toast.makeText(MainActivity.this, "眼镜拔出，屏幕已恢复", Toast.LENGTH_SHORT).show();
+                              runOnUiThread(new Runnable() {
+                                  @Override
+                                  public void run() {
+                                      setDisplayPowerMode(POWER_MODE_NORMAL);
+                                      Toast.makeText(MainActivity.this, "眼镜拔出，屏幕已恢复", Toast.LENGTH_SHORT).show();
+                                  }
                               });
                           }
                       }
@@ -139,11 +153,6 @@ jobs:
               }
           }' > $WORK_DIR/src/com/m5ctrl/MainActivity.java
 
-          # 校验源文件
-          echo "=== 源文件校验 ==="
-          ls -la $WORK_DIR/src/com/m5ctrl/
-          ls -la $WORK_DIR/AndroidManifest.xml
-
           # 3. 安装 Android SDK 工具
           mkdir -p $ANDROID_HOME/cmdline-tools
           wget -q -O $WORK_DIR/cmdline-tools.zip \
@@ -155,7 +164,7 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;33.0.2"
 
-          # 4. 打包清单（无自定义资源，移除-S参数）
+          # 4. 打包清单（无自定义资源）
           echo "打包基础APK..."
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
@@ -165,13 +174,10 @@ jobs:
           # 5. 编译 Java 代码
           echo "编译Java代码..."
           mkdir -p $BUILD_DIR/classes
-          javac -source 1.8 -target 1.8 \
+          javac -source 1.7 -target 1.7 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
-
-          echo "=== class文件校验 ==="
-          ls -la $BUILD_DIR/classes/com/m5ctrl/
 
           # 6. 生成 DEX
           echo "生成DEX..."
@@ -200,9 +206,7 @@ jobs:
             --out $WORK_DIR/m5ctrl-unroot.apk \
             $BUILD_DIR/base.apk
 
-          echo "=== 最终产物校验 ==="
-          ls -lh $WORK_DIR/m5ctrl-unroot.apk
-          echo "编译完成"
+          echo "编译完成：m5ctrl-unroot.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
