@@ -1,0 +1,43 @@
+#!/bin/bash
+set -e
+export ANDROID_HOME=$HOME/android
+AIDL=$ANDROID_HOME/build-tools/36.0.0/aidl
+AAPT2=$ANDROID_HOME/build-tools/36.0.0/aapt2
+D8=$ANDROID_HOME/build-tools/36.0.0/d8
+APKSIGNER=$ANDROID_HOME/build-tools/36.0.0/apksigner
+
+mkdir -p gen classes res/xml res/layout
+
+# AIDL编译
+$AIDL --lang=java src/android/hardware/display/IDisplayManager.aidl -o gen/
+
+# 编译Java源码
+javac -cp "$ANDROID_HOME/platforms/android-36/android.jar:lib/shizuku-api.jar" \
+  -d classes -sourcepath src:gen \
+  src/com/m5ctrl/MainActivity.java \
+  src/com/m5ctrl/M5Accessibility.java
+
+# 资源打包
+$AAPT2 compile res/layout/main.xml -o res/layout.zip
+$AAPT2 compile res/xml/accessibility.xml -o res/xml.zip
+$AAPT2 link res/layout.zip res/xml.zip -o aligned.apk \
+  --manifest AndroidManifest.xml \
+  -I $ANDROID_HOME/platforms/android-36/android.jar
+
+# 生成dex
+$D8 classes/com/m5ctrl/*.class --lib $ANDROID_HOME/platforms/android-36/android.jar --output dexout
+zip -j -u aligned.apk dexout/classes.dex
+
+# 嵌入守护二进制
+mkdir -p assets
+cp m5ctl assets/
+zip -u aligned.apk assets/m5ctl
+
+# 测试签名
+keytool -genkey -keystore test.ks -alias testkey -keyalg RSA -keysize 2048 \
+  -storepass 123456 -keypass 123456 -dname "CN=test" -noprompt
+$APKSIGNER sign --ks test.ks --ks-pass pass:123456 --key-pass pass:123456 \
+  --out m5ctrl_unroot.apk aligned.apk
+
+# 清理临时文件
+rm -rf gen classes dexout res res.zip test.ks aligned.apk
