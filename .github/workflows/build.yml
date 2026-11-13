@@ -55,7 +55,7 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java（修正Shizuku调用方式）
+          # 2. 生成 MainActivity.java（全异常兜底版）
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -63,7 +63,6 @@ jobs:
           import android.os.Bundle;
           import android.os.IBinder;
           import android.os.Parcel;
-          import android.os.RemoteException;
           import android.util.Log;
           import android.view.View;
           import android.widget.Button;
@@ -84,6 +83,7 @@ jobs:
               private static final int REQUEST_CODE = 1001;
               private Integer mSetDisplayPowerModeCode = null;
               private IBinder mDisplayBinder = null;
+              private String mInitError = "";
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
@@ -108,21 +108,19 @@ jobs:
                   layout.addView(btnOn, lp);
                   setContentView(layout);
 
-                  DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
-                  dm.registerDisplayListener(this, null);
+                  // 注册显示监听
+                  try {
+                      DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+                      dm.registerDisplayListener(this, null);
+                  } catch (Throwable e) {
+                      Log.e("M5Ctrl", "注册监听失败", e);
+                  }
 
+                  // 初始化系统服务
                   initDisplayService();
 
-                  // 申请 Shizuku 权限
-                  try {
-                      if (Shizuku.isPreV11() || Shizuku.getVersion() < 11) {
-                          Toast.makeText(this, "Shizuku 版本过低", Toast.LENGTH_SHORT).show();
-                      } else if (Shizuku.checkSelfPermission() != 0) {
-                          Shizuku.requestPermission(REQUEST_CODE);
-                      }
-                  } catch (Exception e) {
-                      Toast.makeText(this, "未检测到 Shizuku 服务", Toast.LENGTH_SHORT).show();
-                  }
+                  // Shizuku 权限检测
+                  checkShizuku();
               }
 
               private void initDisplayService() {
@@ -135,33 +133,54 @@ jobs:
                       Field field = stubClz.getDeclaredField("TRANSACTION_setDisplayPowerMode");
                       field.setAccessible(true);
                       mSetDisplayPowerModeCode = field.getInt(null);
-                  } catch (Exception e) {
+                  } catch (Throwable e) {
+                      mInitError = "服务初始化失败: " + e.getMessage();
                       Log.e("M5Ctrl", "初始化服务失败", e);
+                  }
+              }
+
+              private void checkShizuku() {
+                  try {
+                      if (Shizuku.isPreV11() || Shizuku.getVersion() < 11) {
+                          Toast.makeText(this, "Shizuku 版本过低，需 v11+", Toast.LENGTH_LONG).show();
+                      } else if (Shizuku.checkSelfPermission() != 0) {
+                          Shizuku.requestPermission(REQUEST_CODE);
+                      } else {
+                          Toast.makeText(this, "Shizuku 已授权", Toast.LENGTH_SHORT).show();
+                      }
+                  } catch (Throwable e) {
+                      Toast.makeText(this, "未检测到 Shizuku 服务: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                      Log.e("M5Ctrl", "Shizuku检测失败", e);
                   }
               }
 
               @Override
               public void onClick(View v) {
-                  if (!isShizukuReady()) {
-                      Toast.makeText(this, "请先在 Shizuku 中授权并启动服务", Toast.LENGTH_SHORT).show();
-                      return;
-                  }
-                  if (mDisplayBinder == null || mSetDisplayPowerModeCode == null) {
-                      Toast.makeText(this, "系统服务初始化失败", Toast.LENGTH_SHORT).show();
-                      return;
-                  }
-                  CharSequence text = ((Button)v).getText();
-                  if ("关闭手机屏幕".equals(text)) {
-                      setDisplayPowerMode(0, POWER_MODE_OFF);
-                  } else {
-                      setDisplayPowerMode(0, POWER_MODE_NORMAL);
+                  try {
+                      if (!isShizukuReady()) {
+                          Toast.makeText(this, "请先启动并授权 Shizuku", Toast.LENGTH_SHORT).show();
+                          return;
+                      }
+                      if (mDisplayBinder == null || mSetDisplayPowerModeCode == null) {
+                          Toast.makeText(this, mInitError, Toast.LENGTH_LONG).show();
+                          return;
+                      }
+                      CharSequence text = ((Button)v).getText();
+                      if ("关闭手机屏幕".equals(text)) {
+                          setDisplayPowerMode(0, POWER_MODE_OFF);
+                      } else {
+                          setDisplayPowerMode(0, POWER_MODE_NORMAL);
+                      }
+                  } catch (Throwable e) {
+                      Toast.makeText(this, "点击出错: " + e.getMessage(), Toast.LENGTH_LONG).show();
+                      Log.e("M5Ctrl", "点击失败", e);
                   }
               }
 
               private boolean isShizukuReady() {
                   try {
                       return Shizuku.pingBinder() && Shizuku.checkSelfPermission() == 0;
-                  } catch (Exception e) {
+                  } catch (Throwable e) {
                       return false;
                   }
               }
@@ -171,9 +190,13 @@ jobs:
 
               @Override
               public void onDisplayRemoved(int displayId) {
-                  if (displayId == 20 && mScreenOffState) {
-                      mCurrentTask = TASK_RESTORE_SCREEN;
-                      runOnUiThread(this);
+                  try {
+                      if (displayId == 20 && mScreenOffState) {
+                          mCurrentTask = TASK_RESTORE_SCREEN;
+                          runOnUiThread(this);
+                      }
+                  } catch (Throwable e) {
+                      Log.e("M5Ctrl", "拔屏回调失败", e);
                   }
               }
 
@@ -182,9 +205,13 @@ jobs:
 
               @Override
               public void run() {
-                  if (mCurrentTask == TASK_RESTORE_SCREEN) {
-                      setDisplayPowerMode(0, POWER_MODE_NORMAL);
-                      Toast.makeText(MainActivity.this, "眼镜拔出，屏幕已恢复", Toast.LENGTH_SHORT).show();
+                  try {
+                      if (mCurrentTask == TASK_RESTORE_SCREEN) {
+                          setDisplayPowerMode(0, POWER_MODE_NORMAL);
+                          Toast.makeText(MainActivity.this, "眼镜拔出，屏幕已恢复", Toast.LENGTH_SHORT).show();
+                      }
+                  } catch (Throwable e) {
+                      Log.e("M5Ctrl", "回调执行失败", e);
                   }
               }
 
@@ -196,19 +223,22 @@ jobs:
                       data.writeInt(displayId);
                       data.writeInt(mode);
                       
-                      // 用ShizukuBinderWrapper包装系统Binder，以Shizuku权限执行调用
                       IBinder wrappedBinder = new ShizukuBinderWrapper(mDisplayBinder);
-                      wrappedBinder.transact(mSetDisplayPowerModeCode, data, reply, 0);
+                      boolean result = wrappedBinder.transact(mSetDisplayPowerModeCode, data, reply, 0);
                       
                       reply.recycle();
                       data.recycle();
 
-                      mScreenOffState = (mode == POWER_MODE_OFF);
-                      String msg = mode == POWER_MODE_OFF ? "手机屏幕已关闭" : "手机屏幕已点亮";
-                      Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
-                  } catch (Exception e) {
-                      Log.e("M5Ctrl", "操作失败", e);
-                      Toast.makeText(this, "失败：" + e.getMessage(), Toast.LENGTH_LONG).show();
+                      if (result) {
+                          mScreenOffState = (mode == POWER_MODE_OFF);
+                          String msg = mode == POWER_MODE_OFF ? "手机屏幕已关闭" : "手机屏幕已点亮";
+                          Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
+                      } else {
+                          Toast.makeText(this, "调用失败，系统返回失败", Toast.LENGTH_LONG).show();
+                      }
+                  } catch (Throwable e) {
+                      Log.e("M5Ctrl", "执行失败", e);
+                      Toast.makeText(this, "执行失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
                   }
               }
           }' > $WORK_DIR/src/com/m5ctrl/MainActivity.java
