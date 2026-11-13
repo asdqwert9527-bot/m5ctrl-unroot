@@ -27,10 +27,15 @@ jobs:
           rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml $WORK_DIR/libs
           mkdir -p $WORK_DIR/src/com/m5ctrl $WORK_DIR/libs
 
-          # 下载 Shizuku API
+          # 下载完整Shizuku依赖（api核心包 + provider兼容包）
           wget -q -O $WORK_DIR/libs/shizuku-api.aar \
             https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.aar
+          wget -q -O $WORK_DIR/libs/shizuku-provider.aar \
+            https://repo1.maven.org/maven2/dev/rikka/shizuku/provider/13.1.2/provider-13.1.2.aar
+          
+          # 解压所有依赖的class文件
           unzip -p $WORK_DIR/libs/shizuku-api.aar classes.jar > $WORK_DIR/libs/shizuku-api.jar
+          unzip -p $WORK_DIR/libs/shizuku-provider.aar classes.jar > $WORK_DIR/libs/shizuku-provider.jar
 
           # 1. 生成 AndroidManifest.xml
           echo '<?xml version="1.0" encoding="utf-8"?>
@@ -41,6 +46,7 @@ jobs:
               <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />
               <queries>
                   <package android:name="rikka.shizuku" />
+                  <package android:name="moe.shizuku.privileged.api" />
               </queries>
               <application
                   android:label="M5Ctrl"
@@ -55,7 +61,7 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java（全异常兜底版）
+          # 2. 生成 MainActivity.java
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -261,17 +267,17 @@ jobs:
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 5. 编译Java
+          # 5. 编译Java（引入完整Shizuku依赖）
           echo "=== 编译Java代码 ==="
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -XDstringConcat=inline \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
-            -classpath $WORK_DIR/libs/shizuku-api.jar \
+            -classpath "$WORK_DIR/libs/shizuku-api.jar:$WORK_DIR/libs/shizuku-provider.jar" \
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 6. 生成DEX
+          # 6. 生成DEX（包含所有依赖类）
           echo "=== 生成DEX ==="
           mkdir -p $BUILD_DIR/dex
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
@@ -279,7 +285,8 @@ jobs:
             --no-desugaring \
             --lib $ANDROID_HOME/platforms/android-33/android.jar \
             $BUILD_DIR/classes/com/m5ctrl/*.class \
-            $WORK_DIR/libs/shizuku-api.jar
+            $WORK_DIR/libs/shizuku-api.jar \
+            $WORK_DIR/libs/shizuku-provider.jar
 
           # 7. 组装APK
           echo "=== 组装APK ==="
