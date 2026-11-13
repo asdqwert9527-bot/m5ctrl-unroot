@@ -48,7 +48,7 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java（全匿名内部类，无Lambda）
+          # 2. 生成 MainActivity.java
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -171,7 +171,7 @@ jobs:
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 5. 编译 Java 代码（Java 8 + 无Lambda语法）
+          # 5. 编译 Java 代码
           echo "编译Java代码..."
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
@@ -179,8 +179,9 @@ jobs:
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 6. 生成 DEX
+          # 6. 生成 DEX（提前创建输出目录）
           echo "生成DEX..."
+          mkdir -p $BUILD_DIR/dex
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
             --lib $ANDROID_HOME/platforms/android-33/android.jar \
             $BUILD_DIR/classes/com/m5ctrl/*.class
