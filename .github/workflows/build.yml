@@ -21,14 +21,14 @@ jobs:
           WORK_DIR=$PWD
           ANDROID_HOME=$WORK_DIR/android-sdk
           BUILD_DIR=$WORK_DIR/build
-          BUILD_TOOLS=$ANDROID_HOME/build-tools/33.0.2
+          BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0
           mkdir -p $BUILD_DIR
 
           # 清理原有文件，全部重新生成
           rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml
           mkdir -p $WORK_DIR/src/com/m5ctrl
 
-          # 1. 生成 AndroidManifest.xml（包名与代码完全一致）
+          # 1. 生成 AndroidManifest.xml
           echo '<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.m5ctrl"
@@ -48,7 +48,7 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java（纯代码UI+匿名内部类，无Lambda、无资源引用）
+          # 2. 生成 MainActivity.java
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -152,7 +152,7 @@ jobs:
               }
           }' > $WORK_DIR/src/com/m5ctrl/MainActivity.java
 
-          # 3. 安装 Android SDK 工具
+          # 3. 安装 Android SDK 工具（升级build-tools至34.0.0稳定版）
           mkdir -p $ANDROID_HOME/cmdline-tools
           wget -q -O $WORK_DIR/cmdline-tools.zip \
             https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
@@ -161,16 +161,16 @@ jobs:
 
           yes 2>/dev/null | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
-            "platforms;android-33" "build-tools;33.0.2"
+            "platforms;android-33" "build-tools;34.0.0"
 
-          # 4. 打包清单文件（无自定义资源，无R类依赖）
+          # 4. 打包清单文件
           echo "=== 打包基础APK ==="
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 5. 编译 Java 代码（标准Java8字节码，链接Android SDK）
+          # 5. 编译 Java 代码
           echo "=== 编译Java代码 ==="
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
@@ -178,17 +178,15 @@ jobs:
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 校验class生成
-          ls -la $BUILD_DIR/classes/com/m5ctrl/
-
-          # 6. 生成 DEX（改用dx工具，兼容性更强，规避d8解析崩溃）
+          # 6. 生成 DEX（新版d8 + 指定min-api，修复解析崩溃）
           echo "=== 生成DEX ==="
           mkdir -p $BUILD_DIR/dex
-          $BUILD_TOOLS/dx --dex \
-            --output=$BUILD_DIR/dex/classes.dex \
+          $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
+            --min-api 24 \
+            --lib $ANDROID_HOME/platforms/android-33/android.jar \
             $BUILD_DIR/classes/com/m5ctrl/*.class
 
-          # 7. 组装 APK（dex放入根目录）
+          # 7. 组装 APK
           echo "=== 组装APK ==="
           cd $BUILD_DIR
           zip -j base.apk dex/classes.dex
