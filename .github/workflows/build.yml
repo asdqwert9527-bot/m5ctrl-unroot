@@ -99,7 +99,7 @@ jobs:
               <string name="app_name">M5Ctrl</string>
           </resources>' > $WORK_DIR/res/values/strings.xml
 
-          # 生成 MainActivity.java（反射调用Shizuku，零外部依赖）
+          # 生成 MainActivity.java
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -195,19 +195,22 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;33.0.2"
 
-          # 2. 打包资源
+          # 2. 打包资源并生成 R.java
+          mkdir -p $BUILD_DIR/gen
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
             -S $WORK_DIR/res \
             -I $ANDROID_HOME/platforms/android-33/android.jar \
+            -J $BUILD_DIR/gen \
             -F $BUILD_DIR/base.apk
 
-          # 3. 编译 Java 代码（无外部依赖）
+          # 3. 编译 Java 代码（包含自动生成的 R.java）
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
             -d $BUILD_DIR/classes \
-            $WORK_DIR/src/com/m5ctrl/*.java
+            $WORK_DIR/src/com/m5ctrl/*.java \
+            $BUILD_DIR/gen/com/m5ctrl/R.java
 
           # 4. 生成 DEX
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
