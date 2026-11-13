@@ -24,60 +24,49 @@ jobs:
           BUILD_TOOLS=$ANDROID_HOME/build-tools/33.0.2
           mkdir -p $BUILD_DIR
 
-          # 重建资源文件，彻底规避文件名异常
+          # 重建资源文件，规避文件名异常
           rm -rf $WORK_DIR/res
-          mkdir -p $WORK_DIR/res/layout
-          mkdir -p $WORK_DIR/res/xml
-          mkdir -p $WORK_DIR/res/values
+          mkdir -p $WORK_DIR/res/layout $WORK_DIR/res/xml $WORK_DIR/res/values
 
-          cat > $WORK_DIR/res/layout/main.xml << 'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:padding="16dp">
-    <Button
-        android:id="@+id/btn_screen_off"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:text="关闭手机屏幕" />
-    <Button
-        android:id="@+id/btn_screen_on"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="12dp"
-        android:text="点亮手机屏幕" />
-</LinearLayout>
-EOF
+          echo '<?xml version="1.0" encoding="utf-8"?>
+          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+              android:layout_width="match_parent"
+              android:layout_height="match_parent"
+              android:orientation="vertical"
+              android:padding="16dp">
+              <Button
+                  android:id="@+id/btn_screen_off"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:text="关闭手机屏幕" />
+              <Button
+                  android:id="@+id/btn_screen_on"
+                  android:layout_width="match_parent"
+                  android:layout_height="wrap_content"
+                  android:layout_marginTop="12dp"
+                  android:text="点亮手机屏幕" />
+          </LinearLayout>' > $WORK_DIR/res/layout/main.xml
 
-          cat > $WORK_DIR/res/xml/accessibility.xml << 'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeAllMask"
-    android:accessibilityFeedbackType="feedbackGeneric"
-    android:accessibilityFlags="flagDefault"
-    android:canRetrieveWindowContent="false"
-    android:description="@string/app_name"
-    android:packageNames="*" />
-EOF
+          echo '<?xml version="1.0" encoding="utf-8"?>
+          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+              android:accessibilityEventTypes="typeAllMask"
+              android:accessibilityFeedbackType="feedbackGeneric"
+              android:accessibilityFlags="flagDefault"
+              android:canRetrieveWindowContent="false"
+              android:description="@string/app_name"
+              android:packageNames="*" />' > $WORK_DIR/res/xml/accessibility.xml
 
-          cat > $WORK_DIR/res/values/strings.xml << 'EOF'
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <string name="app_name">M5Ctrl</string>
-</resources>
-EOF
+          echo '<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">M5Ctrl</string>
+          </resources>' > $WORK_DIR/res/values/strings.xml
 
-          echo "=== 重建后资源目录 ==="
-          ls -laR $WORK_DIR/res/
-
-          # 1. 下载 Shizuku 依赖
+          # 下载 Shizuku 依赖
           mkdir -p $WORK_DIR/lib
           curl -sL -o $WORK_DIR/lib/shizuku-api.jar \
             https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
 
-          # 2. 安装 Android SDK 工具
+          # 安装 Android SDK 工具
           mkdir -p $ANDROID_HOME/cmdline-tools
           curl -sL -o $WORK_DIR/cmdline-tools.zip \
             https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
@@ -88,16 +77,14 @@ EOF
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;33.0.2"
 
-          # 3. 打包资源
-          echo "打包资源..."
+          # 打包资源
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
             -S $WORK_DIR/res \
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 4. 编译 Java 代码
-          echo "编译Java代码..."
+          # 编译 Java 代码
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
@@ -105,20 +92,17 @@ EOF
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 5. 生成 DEX
-          echo "生成DEX..."
+          # 生成 DEX
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
             --lib $ANDROID_HOME/platforms/android-33/android.jar \
             $BUILD_DIR/classes/com/m5ctrl/*.class
 
-          # 6. 组装 APK
-          echo "组装APK..."
+          # 组装 APK
           cd $BUILD_DIR
           zip -j base.apk dex/classes.dex
           cd $WORK_DIR
 
-          # 7. 签名
-          echo "签名APK..."
+          # 签名
           keytool -genkey -keystore $WORK_DIR/test.keystore -alias test \
             -keyalg RSA -keysize 2048 \
             -storepass 123456 -keypass 123456 \
@@ -132,7 +116,7 @@ EOF
             --out $WORK_DIR/m5ctrl-unroot.apk \
             $BUILD_DIR/base.apk
 
-          echo "编译完成：m5ctrl-unroot.apk"
+          echo "编译完成"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
