@@ -24,9 +24,8 @@ jobs:
           BUILD_TOOLS=$ANDROID_HOME/build-tools/33.0.2
           mkdir -p $BUILD_DIR
 
-          echo "=== 校验资源文件 ==="
-          ls -la $WORK_DIR/res/layout/
-          ls -la $WORK_DIR/res/xml/
+          echo "=== 资源目录校验 ==="
+          ls -laR $WORK_DIR/res/
 
           # 1. 下载 Shizuku 依赖
           mkdir -p $WORK_DIR/lib
@@ -44,24 +43,16 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;33.0.2"
 
-          # 3. 编译资源（使用绝对路径）
-          mkdir -p $BUILD_DIR/res
-          $BUILD_TOOLS/aapt2 compile \
-            -o $BUILD_DIR/res/layout.flat \
-            $WORK_DIR/res/layout/main.xml
-          $BUILD_TOOLS/aapt2 compile \
-            -o $BUILD_DIR/res/xml.flat \
-            $WORK_DIR/res/xml/accessibility.xml
-
-          # 4. 打包资源和清单
-          $BUILD_TOOLS/aapt2 link -o $BUILD_DIR/base.apk \
+          # 3. 打包资源（aapt直接扫描整个res目录，规避单文件识别问题）
+          echo "打包资源..."
+          $BUILD_TOOLS/aapt package -f \
+            -M $WORK_DIR/AndroidManifest.xml \
+            -S $WORK_DIR/res \
             -I $ANDROID_HOME/platforms/android-33/android.jar \
-            --manifest $WORK_DIR/AndroidManifest.xml \
-            --auto-add-overlay \
-            $BUILD_DIR/res/layout.flat \
-            $BUILD_DIR/res/xml.flat
+            -F $BUILD_DIR/base.apk
 
-          # 5. 编译 Java 代码
+          # 4. 编译 Java 代码
+          echo "编译Java代码..."
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
@@ -69,17 +60,20 @@ jobs:
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 6. 生成 DEX
+          # 5. 生成 DEX
+          echo "生成DEX..."
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
             --lib $ANDROID_HOME/platforms/android-33/android.jar \
             $BUILD_DIR/classes/com/m5ctrl/*.class
 
-          # 7. 组装 APK
+          # 6. 组装 APK
+          echo "组装APK..."
           cd $BUILD_DIR
           zip -j base.apk dex/classes.dex
           cd $WORK_DIR
 
-          # 8. 签名
+          # 7. 签名
+          echo "签名APK..."
           keytool -genkey -keystore $WORK_DIR/test.keystore -alias test \
             -keyalg RSA -keysize 2048 \
             -storepass 123456 -keypass 123456 \
@@ -93,7 +87,7 @@ jobs:
             --out $WORK_DIR/m5ctrl-unroot.apk \
             $BUILD_DIR/base.apk
 
-          echo "编译完成"
+          echo "编译完成：m5ctrl-unroot.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
