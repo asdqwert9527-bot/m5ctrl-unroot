@@ -28,7 +28,7 @@ jobs:
           rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml
           mkdir -p $WORK_DIR/src/com/m5ctrl
 
-          # 1. 生成 AndroidManifest.xml
+          # 1. 生成 AndroidManifest.xml（包名与代码完全一致）
           echo '<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.m5ctrl"
@@ -48,7 +48,7 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java
+          # 2. 生成 MainActivity.java（纯代码UI+匿名内部类，无Lambda、无资源引用）
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -99,7 +99,6 @@ jobs:
                   lp.topMargin = 36;
                   layout.addView(btnOn, lp);
                   setContentView(layout);
-
                   initDisplayListener();
               }
 
@@ -160,44 +159,47 @@ jobs:
           unzip -q $WORK_DIR/cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
           mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
 
-          yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
+          yes 2>/dev/null | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;33.0.2"
 
-          # 4. 打包清单（无自定义资源）
-          echo "打包基础APK..."
+          # 4. 打包清单文件（无自定义资源，无R类依赖）
+          echo "=== 打包基础APK ==="
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 5. 编译 Java 代码
-          echo "编译Java代码..."
+          # 5. 编译 Java 代码（标准Java8字节码，链接Android SDK）
+          echo "=== 编译Java代码 ==="
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 6. 生成 DEX（提前创建输出目录）
-          echo "生成DEX..."
+          # 校验class生成
+          ls -la $BUILD_DIR/classes/com/m5ctrl/
+
+          # 6. 生成 DEX（改用dx工具，兼容性更强，规避d8解析崩溃）
+          echo "=== 生成DEX ==="
           mkdir -p $BUILD_DIR/dex
-          $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
-            --lib $ANDROID_HOME/platforms/android-33/android.jar \
+          $BUILD_TOOLS/dx --dex \
+            --output=$BUILD_DIR/dex/classes.dex \
             $BUILD_DIR/classes/com/m5ctrl/*.class
 
-          # 7. 组装 APK
-          echo "组装APK..."
+          # 7. 组装 APK（dex放入根目录）
+          echo "=== 组装APK ==="
           cd $BUILD_DIR
           zip -j base.apk dex/classes.dex
           cd $WORK_DIR
 
-          # 8. 签名
-          echo "签名APK..."
+          # 8. 签名APK
+          echo "=== 签名APK ==="
           keytool -genkey -keystore $WORK_DIR/test.keystore -alias test \
             -keyalg RSA -keysize 2048 \
             -storepass 123456 -keypass 123456 \
-            -dname "CN=test" -noprompt
+            -dname "CN=test" -noprompt 2>/dev/null
 
           $BUILD_TOOLS/apksigner sign \
             --ks $WORK_DIR/test.keystore \
@@ -207,7 +209,8 @@ jobs:
             --out $WORK_DIR/m5ctrl-unroot.apk \
             $BUILD_DIR/base.apk
 
-          echo "编译完成：m5ctrl-unroot.apk"
+          echo "=== 编译完成 ==="
+          ls -lh $WORK_DIR/m5ctrl-unroot.apk
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
