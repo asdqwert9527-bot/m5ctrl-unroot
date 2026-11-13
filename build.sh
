@@ -1,43 +1,77 @@
 #!/bin/bash
 set -e
-export ANDROID_HOME=$HOME/android
-AIDL=$ANDROID_HOME/build-tools/36.0.0/aidl
-AAPT2=$ANDROID_HOME/build-tools/36.0.0/aapt2
-D8=$ANDROID_HOME/build-tools/36.0.0/d8
-APKSIGNER=$ANDROID_HOME/build-tools/36.0.0/apksigner
 
-mkdir -p gen classes res/xml res/layout
+# 基础配置
+export ANDROID_HOME=$PWD/android-sdk
+export NDK_VERSION=25.2.9519653
+export NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION
+export BUILD_DIR=$PWD/build
+mkdir -p $BUILD_DIR
 
-# AIDL编译
-$AIDL --lang=java src/android/hardware/display/IDisplayManager.aidl -o gen/
+# 1. 自动下载 Shizuku 依赖
+mkdir -p lib
+echo "下载 shizuku-api 依赖..."
+curl -sL -o lib/shizuku-api.jar \
+  https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
 
-# 编译Java源码
-javac -cp "$ANDROID_HOME/platforms/android-36/android.jar:lib/shizuku-api.jar" \
-  -d classes -sourcepath src:gen \
-  src/com/m5ctrl/MainActivity.java \
-  src/com/m5ctrl/M5Accessibility.java
+# 2. 自动安装 Android NDK
+echo "安装 Android NDK..."
+mkdir -p $ANDROID_HOME/cmdline-tools
+curl -sL -o cmdline-tools.zip \
+  https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
+mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;$NDK_VERSION" "platforms;android-33" "build-tools;33.0.2"
 
-# 资源打包
-$AAPT2 compile res/layout/main.xml -o res/layout.zip
-$AAPT2 compile res/xml/accessibility.xml -o res/xml.zip
-$AAPT2 link res/layout.zip res/xml.zip -o aligned.apk \
-  --manifest AndroidManifest.xml \
-  -I $ANDROID_HOME/platforms/android-36/android.jar
-
-# 生成dex
-$D8 classes/com/m5ctrl/*.class --lib $ANDROID_HOME/platforms/android-36/android.jar --output dexout
-zip -j -u aligned.apk dexout/classes.dex
-
-# 嵌入守护二进制
+# 3. NDK 编译守护进程 m5ctl
+echo "编译守护进程 m5ctl..."
+$NDK_HOME/ndk-build NDK_PROJECT_PATH=$PWD/jni APP_BUILD_SCRIPT=$PWD/jni/Android.mk \
+  APP_ABI=arm64-v8a APP_PLATFORM=android-33
 mkdir -p assets
-cp m5ctl assets/
-zip -u aligned.apk assets/m5ctl
+cp jni/libs/arm64-v8a/m5ctl assets/m5ctl
+chmod +x assets/m5ctl
 
-# 测试签名
-keytool -genkey -keystore test.ks -alias testkey -keyalg RSA -keysize 2048 \
+# 4. 编译 Java 源码
+echo "编译 Java 源码..."
+mkdir -p $BUILD_DIR/classes
+javac -source 1.8 -target 1.8 -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
+  -cp lib/shizuku-api.jar -d $BUILD_DIR/classes \
+  src/com/m5ctrl/*.java
+
+# 5. 生成 dex
+echo "生成 DEX..."
+$ANDROID_HOME/build-tools/33.0.2/d8 --output $BUILD_DIR/dex \
+  --lib $ANDROID_HOME/platforms/android-33/android.jar \
+  $BUILD_DIR/classes/com/m5ctrl/*.class
+
+# 6. 打包资源生成 APK 基础包
+echo "打包资源..."
+$ANDROID_HOME/build-tools/33.0.2/aapt2 link -o $BUILD_DIR/unsigned.apk \
+  -I $ANDROID_HOME/platforms/android-33/android.jar \
+  --manifest AndroidManifest.xml \
+  --auto-add-overlay \
+  -R res/layout/main.xml.flat -R res/xml/accessibility.xml.flat
+
+# 提前编译资源
+$ANDROID_HOME/build-tools/33.0.2/aapt2 compile -o res/layout.zip res/layout/main.xml
+$ANDROID_HOME/build-tools/33.0.2/aapt2 compile -o res/xml.zip res/xml/accessibility.xml
+
+# 7. 把 dex 和 守护进程塞进 APK
+echo "打包最终 APK..."
+cd $BUILD_DIR
+zip -j ../unsigned.apk dex/classes.dex
+cd ..
+zip -r unsigned.apk assets/m5ctl
+
+# 8. 测试签名
+echo "签名 APK..."
+keytool -genkey -keystore test.keystore -alias test -keyalg RSA -keysize 2048 \
   -storepass 123456 -keypass 123456 -dname "CN=test" -noprompt
-$APKSIGNER sign --ks test.ks --ks-pass pass:123456 --key-pass pass:123456 \
-  --out m5ctrl_unroot.apk aligned.apk
+$ANDROID_HOME/build-tools/33.0.2/apksigner sign --ks test.keystore \
+  --ks-key-alias test --ks-pass pass:123456 --key-pass pass:123456 \
+  --out m5ctrl-unroot.apk unsigned.apk
 
-# 清理临时文件
-rm -rf gen classes dexout res res.zip test.ks aligned.apk
+# 9. 清理临时文件
+rm -rf build lib jni/libs cmdline-tools.zip unsigned.apk test.keystore res/*.zip
+echo "编译完成：m5ctrl-unroot.apk"
