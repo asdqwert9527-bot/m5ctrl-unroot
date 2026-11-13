@@ -14,64 +14,87 @@ echo "下载 shizuku-api 依赖..."
 curl -sL -o lib/shizuku-api.jar \
   https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
 
-# 2. 自动安装 Android NDK
-echo "安装 Android NDK..."
+# 2. 自动安装 Android SDK + NDK
+echo "安装 Android SDK 工具..."
 mkdir -p $ANDROID_HOME/cmdline-tools
 curl -sL -o cmdline-tools.zip \
   https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
 unzip -q cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
 mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+
 yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
-$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;$NDK_VERSION" "platforms;android-33" "build-tools;33.0.2"
+$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+  "ndk;$NDK_VERSION" \
+  "platforms;android-33" \
+  "build-tools;33.0.2"
 
 # 3. NDK 编译守护进程 m5ctl
 echo "编译守护进程 m5ctl..."
-$NDK_HOME/ndk-build NDK_PROJECT_PATH=$PWD/jni APP_BUILD_SCRIPT=$PWD/jni/Android.mk \
-  APP_ABI=arm64-v8a APP_PLATFORM=android-33
+cd jni
+$NDK_HOME/ndk-build APP_BUILD_SCRIPT=Android.mk APP_ABI=arm64-v8a APP_PLATFORM=android-33
+cd ..
 mkdir -p assets
 cp jni/libs/arm64-v8a/m5ctl assets/m5ctl
 chmod +x assets/m5ctl
 
-# 4. 编译 Java 源码
-echo "编译 Java 源码..."
-mkdir -p $BUILD_DIR/classes
-javac -source 1.8 -target 1.8 -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
-  -cp lib/shizuku-api.jar -d $BUILD_DIR/classes \
-  src/com/m5ctrl/*.java
+# 4. 编译资源文件
+echo "编译资源文件..."
+mkdir -p $BUILD_DIR/res
+$ANDROID_HOME/build-tools/33.0.2/aapt2 compile \
+  -o $BUILD_DIR/res/layout.flat \
+  res/layout/main.xml
+$ANDROID_HOME/build-tools/33.0.2/aapt2 compile \
+  -o $BUILD_DIR/res/accessibility.flat \
+  res/xml/accessibility.xml
 
-# 5. 生成 dex
-echo "生成 DEX..."
-$ANDROID_HOME/build-tools/33.0.2/d8 --output $BUILD_DIR/dex \
-  --lib $ANDROID_HOME/platforms/android-33/android.jar \
-  $BUILD_DIR/classes/com/m5ctrl/*.class
-
-# 6. 打包资源生成 APK 基础包
-echo "打包资源..."
-$ANDROID_HOME/build-tools/33.0.2/aapt2 link -o $BUILD_DIR/unsigned.apk \
+# 5. 打包资源生成基础APK
+echo "打包资源与清单..."
+$ANDROID_HOME/build-tools/33.0.2/aapt2 link \
+  -o $BUILD_DIR/base.apk \
   -I $ANDROID_HOME/platforms/android-33/android.jar \
   --manifest AndroidManifest.xml \
   --auto-add-overlay \
-  -R res/layout/main.xml.flat -R res/xml/accessibility.xml.flat
+  $BUILD_DIR/res/layout.flat \
+  $BUILD_DIR/res/accessibility.flat
 
-# 提前编译资源
-$ANDROID_HOME/build-tools/33.0.2/aapt2 compile -o res/layout.zip res/layout/main.xml
-$ANDROID_HOME/build-tools/33.0.2/aapt2 compile -o res/xml.zip res/xml/accessibility.xml
+# 6. 编译 Java 源码
+echo "编译 Java 源码..."
+mkdir -p $BUILD_DIR/classes
+javac -source 1.8 -target 1.8 \
+  -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
+  -cp lib/shizuku-api.jar \
+  -d $BUILD_DIR/classes \
+  src/com/m5ctrl/*.java
 
-# 7. 把 dex 和 守护进程塞进 APK
-echo "打包最终 APK..."
+# 7. 生成 DEX
+echo "生成 DEX 文件..."
+$ANDROID_HOME/build-tools/33.0.2/d8 \
+  --output $BUILD_DIR/dex \
+  --lib $ANDROID_HOME/platforms/android-33/android.jar \
+  $BUILD_DIR/classes/com/m5ctrl/*.class
+
+# 8. 把 DEX 和守护进程塞进 APK
+echo "组装最终 APK..."
 cd $BUILD_DIR
-zip -j ../unsigned.apk dex/classes.dex
+zip -j base.apk dex/classes.dex
 cd ..
-zip -r unsigned.apk assets/m5ctl
+zip -j -r $BUILD_DIR/base.apk assets/
 
-# 8. 测试签名
+# 9. 签名
 echo "签名 APK..."
-keytool -genkey -keystore test.keystore -alias test -keyalg RSA -keysize 2048 \
-  -storepass 123456 -keypass 123456 -dname "CN=test" -noprompt
-$ANDROID_HOME/build-tools/33.0.2/apksigner sign --ks test.keystore \
-  --ks-key-alias test --ks-pass pass:123456 --key-pass pass:123456 \
-  --out m5ctrl-unroot.apk unsigned.apk
+keytool -genkey -keystore test.keystore -alias test \
+  -keyalg RSA -keysize 2048 \
+  -storepass 123456 -keypass 123456 \
+  -dname "CN=test" -noprompt
 
-# 9. 清理临时文件
-rm -rf build lib jni/libs cmdline-tools.zip unsigned.apk test.keystore res/*.zip
-echo "编译完成：m5ctrl-unroot.apk"
+$ANDROID_HOME/build-tools/33.0.2/apksigner sign \
+  --ks test.keystore \
+  --ks-key-alias test \
+  --ks-pass pass:123456 \
+  --key-pass pass:123456 \
+  --out m5ctrl-unroot.apk \
+  $BUILD_DIR/base.apk
+
+# 10. 清理临时文件
+rm -rf build lib jni/libs cmdline-tools.zip test.keystore
+echo "编译完成，输出文件：m5ctrl-unroot.apk"
