@@ -1,0 +1,142 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <linux/input.h>
+#include <linux/uinput.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/ioctl.h>
+
+// 按键映射表：{原键值, 目标键值}，可按需增删修改
+static int key_map[][2] = {
+    {KEY_MENU, KEY_BACK},   // 示例：菜单键改为返回键
+    {KEY_BACK, KEY_HOME},   // 示例：返回键改主页键
+    {-1, -1}                // 结束标记，请勿删除
+};
+
+static volatile int stop = 0;
+static int uinput_fd = -1;
+static int input_fd = -1;
+
+static void sig_handler(int sig)
+{
+    stop = 1;
+}
+
+// 键值映射查询
+static int map_keycode(int code)
+{
+    for (int i = 0; key_map[i][0] != -1; i++) {
+        if (key_map[i][0] == code)
+            return key_map[i][1];
+    }
+    return code;
+}
+
+// 初始化uinput虚拟输入设备
+static int init_uinput_dev(void)
+{
+    int fd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
+    if (fd < 0)
+        fd = open("/dev/input/uinput", O_WRONLY | O_NONBLOCK);
+    if (fd < 0)
+        return -1;
+
+    ioctl(fd, UI_SET_EVBIT, EV_KEY);
+    ioctl(fd, UI_SET_EVBIT, EV_SYN);
+    for (int i = 0; i < 256; i++)
+        ioctl(fd, UI_SET_KEYBIT, i);
+
+    struct uinput_user_dev uidev;
+    memset(&uidev, 0, sizeof(uidev));
+    snprintf(uidev.name, UINPUT_MAX_NAME_SIZE, "M5VirtualInput");
+    uidev.id.bustype = BUS_VIRTUAL;
+    uidev.id.vendor  = 0x1234;
+    uidev.id.product = 0x5678;
+    uidev.id.version = 1;
+
+    write(fd, &uidev, sizeof(uidev));
+    ioctl(fd, UI_DEV_CREATE);
+    return fd;
+}
+
+// 注入按键事件
+static void send_key(int code, int value)
+{
+    struct input_event ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type  = EV_KEY;
+    ev.code  = code;
+    ev.value = value;
+    write(uinput_fd, &ev, sizeof(ev));
+
+    memset(&ev, 0, sizeof(ev));
+    ev.type = EV_SYN;
+    ev.code = SYN_REPORT;
+    write(uinput_fd, &ev, sizeof(ev));
+}
+
+// 转为后台守护进程
+static void run_as_daemon(void)
+{
+    pid_t pid = fork();
+    if (pid < 0) exit(1);
+    if (pid > 0) exit(0);
+
+    setsid();
+    signal(SIGCHLD, SIG_IGN);
+    signal(SIGHUP, SIG_IGN);
+
+    pid = fork();
+    if (pid < 0) exit(1);
+    if (pid > 0) exit(0);
+
+    umask(0);
+    chdir("/");
+
+    close(STDIN_FILENO);
+    close(STDOUT_FILENO);
+    close(STDERR_FILENO);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc < 2) {
+        printf("Usage: %s <input_device_path>\n", argv[0]);
+        return 1;
+    }
+
+    run_as_daemon();
+
+    signal(SIGTERM, sig_handler);
+    signal(SIGINT, sig_handler);
+
+    input_fd = open(argv[1], O_RDONLY);
+    if (input_fd < 0)
+        return 1;
+
+    uinput_fd = init_uinput_dev();
+    if (uinput_fd < 0) {
+        close(input_fd);
+        return 1;
+    }
+
+    struct input_event ev;
+    while (!stop) {
+        ssize_t n = read(input_fd, &ev, sizeof(ev));
+        if (n != sizeof(ev))
+            continue;
+
+        if (ev.type == EV_KEY) {
+            int new_code = map_keycode(ev.code);
+            send_key(new_code, ev.value);
+        }
+    }
+
+    ioctl(uinput_fd, UI_DEV_DESTROY);
+    close(uinput_fd);
+    close(input_fd);
+    return 0;
+}
