@@ -24,10 +24,46 @@ jobs:
           BUILD_TOOLS=$ANDROID_HOME/build-tools/33.0.2
           mkdir -p $BUILD_DIR
 
-          # 重建资源文件，规避文件名异常
-          rm -rf $WORK_DIR/res
+          # 清空原有文件，全部重新生成
+          rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml
           mkdir -p $WORK_DIR/res/layout $WORK_DIR/res/xml $WORK_DIR/res/values
+          mkdir -p $WORK_DIR/src/com/m5ctrl
 
+          # 生成 AndroidManifest.xml
+          echo '<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.m5ctrl"
+              android:versionCode="1"
+              android:versionName="1.0">
+              <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />
+              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+              <application
+                  android:label="@string/app_name"
+                  android:icon="@android:drawable/ic_menu_info_details"
+                  android:allowBackup="false">
+                  <activity
+                      android:name=".MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+                  <service
+                      android:name=".M5AccessibilityService"
+                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.accessibilityservice.AccessibilityService" />
+                      </intent-filter>
+                      <meta-data
+                          android:name="android.accessibilityservice"
+                          android:resource="@xml/accessibility" />
+                  </service>
+              </application>
+          </manifest>' > $WORK_DIR/AndroidManifest.xml
+
+          # 生成布局文件
           echo '<?xml version="1.0" encoding="utf-8"?>
           <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
               android:layout_width="match_parent"
@@ -47,6 +83,7 @@ jobs:
                   android:text="点亮手机屏幕" />
           </LinearLayout>' > $WORK_DIR/res/layout/main.xml
 
+          # 生成无障碍配置
           echo '<?xml version="1.0" encoding="utf-8"?>
           <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
               android:accessibilityEventTypes="typeAllMask"
@@ -56,17 +93,96 @@ jobs:
               android:description="@string/app_name"
               android:packageNames="*" />' > $WORK_DIR/res/xml/accessibility.xml
 
+          # 生成字符串资源
           echo '<?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">M5Ctrl</string>
           </resources>' > $WORK_DIR/res/values/strings.xml
 
-          # 下载 Shizuku 依赖
+          # 生成 MainActivity.java
+          echo 'package com.m5ctrl;
+          import android.app.Activity;
+          import android.content.Context;
+          import android.hardware.display.DisplayManager;
+          import android.os.Bundle;
+          import android.os.IBinder;
+          import android.util.Log;
+          import android.widget.Button;
+          import android.widget.Toast;
+          import rikka.shizuku.Shizuku;
+          import android.hardware.display.IDisplayManager;
+          public class MainActivity extends Activity {
+              private boolean mScreenOffState = false;
+              private DisplayManager.DisplayListener mDisplayListener;
+              @Override
+              protected void onCreate(Bundle savedInstanceState) {
+                  super.onCreate(savedInstanceState);
+                  setContentView(R.layout.main);
+                  Button btnOff = findViewById(R.id.btn_screen_off);
+                  Button btnOn = findViewById(R.id.btn_screen_on);
+                  btnOff.setOnClickListener(v -> turnOffInternalScreen());
+                  btnOn.setOnClickListener(v -> turnOnInternalScreen());
+                  mDisplayListener = new DisplayManager.DisplayListener() {
+                      @Override public void onDisplayAdded(int displayId) {}
+                      @Override public void onDisplayRemoved(int displayId) {
+                          if (displayId == 20 && mScreenOffState) {
+                              runOnUiThread(() -> {
+                                  turnOnInternalScreen();
+                                  Toast.makeText(MainActivity.this, "眼镜拔出，屏幕已恢复", Toast.LENGTH_SHORT).show();
+                              });
+                          }
+                      }
+                      @Override public void onDisplayChanged(int displayId) {}
+                  };
+                  DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+                  dm.registerDisplayListener(mDisplayListener, null);
+              }
+              private void turnOffInternalScreen() {
+                  if (Shizuku.getVersion() < 11) {
+                      Toast.makeText(this, "需要先开启 Shizuku", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+                  try {
+                      IBinder b = Shizuku.getBinder();
+                      IDisplayManager dm = IDisplayManager.Stub.asInterface(b);
+                      dm.setDisplayPowerMode(0, 0);
+                      mScreenOffState = true;
+                      Toast.makeText(this,"手机屏幕已关闭",Toast.LENGTH_SHORT).show();
+                  }catch(Exception e){
+                      Log.e("M5Ctrl","关屏失败",e);
+                      Toast.makeText(this,"失败："+e.getMessage(),Toast.LENGTH_LONG).show();
+                  }
+              }
+              private void turnOnInternalScreen() {
+                  try {
+                      IBinder b = Shizuku.getBinder();
+                      IDisplayManager dm = IDisplayManager.Stub.asInterface(b);
+                      dm.setDisplayPowerMode(0, 2);
+                      mScreenOffState = false;
+                      Toast.makeText(this,"手机屏幕已点亮",Toast.LENGTH_SHORT).show();
+                  }catch(Exception e){
+                      Log.e("M5Ctrl","亮屏失败",e);
+                  }
+              }
+          }' > $WORK_DIR/src/com/m5ctrl/MainActivity.java
+
+          # 生成无障碍服务类
+          echo 'package com.m5ctrl;
+          import android.accessibilityservice.AccessibilityService;
+          import android.view.accessibility.AccessibilityEvent;
+          public class M5AccessibilityService extends AccessibilityService {
+              @Override
+              public void onAccessibilityEvent(AccessibilityEvent event) {}
+              @Override
+              public void onInterrupt() {}
+          }' > $WORK_DIR/src/com/m5ctrl/M5AccessibilityService.java
+
+          # 1. 下载 Shizuku 依赖
           mkdir -p $WORK_DIR/lib
           curl -sL -o $WORK_DIR/lib/shizuku-api.jar \
             https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
 
-          # 安装 Android SDK 工具
+          # 2. 安装 Android SDK 工具
           mkdir -p $ANDROID_HOME/cmdline-tools
           curl -sL -o $WORK_DIR/cmdline-tools.zip \
             https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
@@ -77,14 +193,14 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;33.0.2"
 
-          # 打包资源
+          # 3. 打包资源
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
             -S $WORK_DIR/res \
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 编译 Java 代码
+          # 4. 编译 Java 代码
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
@@ -92,17 +208,17 @@ jobs:
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 生成 DEX
+          # 5. 生成 DEX
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
             --lib $ANDROID_HOME/platforms/android-33/android.jar \
             $BUILD_DIR/classes/com/m5ctrl/*.class
 
-          # 组装 APK
+          # 6. 组装 APK
           cd $BUILD_DIR
           zip -j base.apk dex/classes.dex
           cd $WORK_DIR
 
-          # 签名
+          # 7. 签名
           keytool -genkey -keystore $WORK_DIR/test.keystore -alias test \
             -keyalg RSA -keysize 2048 \
             -storepass 123456 -keypass 123456 \
@@ -116,7 +232,7 @@ jobs:
             --out $WORK_DIR/m5ctrl-unroot.apk \
             $BUILD_DIR/base.apk
 
-          echo "编译完成"
+          echo "编译完成：m5ctrl-unroot.apk"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
