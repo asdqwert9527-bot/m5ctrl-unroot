@@ -24,21 +24,20 @@ jobs:
           BUILD_TOOLS=$ANDROID_HOME/build-tools/33.0.2
           mkdir -p $BUILD_DIR
 
-          # 重建所有文件，规避异常字符
+          # 清理原有文件，全部重新生成
           rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml
-          mkdir -p $WORK_DIR/res/layout $WORK_DIR/res/xml $WORK_DIR/res/values
+          mkdir -p $WORK_DIR/res/values
           mkdir -p $WORK_DIR/src/com/m5ctrl
 
-          # AndroidManifest.xml
+          # 生成 AndroidManifest.xml
           echo '<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.m5ctrl"
               android:versionCode="1"
               android:versionName="1.0">
               <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />
-              <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
               <application
-                  android:label="@string/app_name"
+                  android:label="M5Ctrl"
                   android:icon="@android:drawable/ic_menu_info_details"
                   android:allowBackup="false">
                   <activity android:name=".MainActivity" android:exported="true">
@@ -47,55 +46,16 @@ jobs:
                           <category android:name="android.intent.category.LAUNCHER" />
                       </intent-filter>
                   </activity>
-                  <service
-                      android:name=".M5AccessibilityService"
-                      android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
-                      android:exported="true">
-                      <intent-filter>
-                          <action android:name="android.accessibilityservice.AccessibilityService" />
-                      </intent-filter>
-                      <meta-data
-                          android:name="android.accessibilityservice"
-                          android:resource="@xml/accessibility" />
-                  </service>
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 布局
-          echo '<?xml version="1.0" encoding="utf-8"?>
-          <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-              android:layout_width="match_parent"
-              android:layout_height="match_parent"
-              android:orientation="vertical"
-              android:padding="16dp">
-              <Button android:id="@+id/btn_screen_off"
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:text="关闭手机屏幕" />
-              <Button android:id="@+id/btn_screen_on"
-                  android:layout_width="match_parent"
-                  android:layout_height="wrap_content"
-                  android:layout_marginTop="12dp"
-                  android:text="点亮手机屏幕" />
-          </LinearLayout>' > $WORK_DIR/res/layout/main.xml
-
-          # 无障碍配置
-          echo '<?xml version="1.0" encoding="utf-8"?>
-          <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-              android:accessibilityEventTypes="typeAllMask"
-              android:accessibilityFeedbackType="feedbackGeneric"
-              android:accessibilityFlags="flagDefault"
-              android:canRetrieveWindowContent="false"
-              android:description="@string/app_name"
-              android:packageNames="*" />' > $WORK_DIR/res/xml/accessibility.xml
-
-          # 字符串
+          # 生成字符串资源（最简，仅满足打包要求）
           echo '<?xml version="1.0" encoding="utf-8"?>
           <resources>
               <string name="app_name">M5Ctrl</string>
           </resources>' > $WORK_DIR/res/values/strings.xml
 
-          # MainActivity.java
+          # 生成 MainActivity.java（纯代码构建UI，不依赖XML布局）
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -103,7 +63,9 @@ jobs:
           import android.os.Bundle;
           import android.os.IBinder;
           import android.util.Log;
+          import android.view.View;
           import android.widget.Button;
+          import android.widget.LinearLayout;
           import android.widget.Toast;
           import java.lang.reflect.Method;
           public class MainActivity extends Activity {
@@ -111,14 +73,37 @@ jobs:
               private DisplayManager.DisplayListener mDisplayListener;
               private static final int POWER_MODE_OFF = 0;
               private static final int POWER_MODE_NORMAL = 2;
+
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  setContentView(R.layout.main);
-                  Button btnOff = findViewById(R.id.btn_screen_off);
-                  Button btnOn = findViewById(R.id.btn_screen_on);
+                  // 纯代码构建界面
+                  LinearLayout layout = new LinearLayout(this);
+                  layout.setOrientation(LinearLayout.VERTICAL);
+                  layout.setPadding(48, 48, 48, 48);
+
+                  Button btnOff = new Button(this);
+                  btnOff.setText("关闭手机屏幕");
                   btnOff.setOnClickListener(v -> setDisplayPowerMode(POWER_MODE_OFF));
+
+                  Button btnOn = new Button(this);
+                  btnOn.setText("点亮手机屏幕");
                   btnOn.setOnClickListener(v -> setDisplayPowerMode(POWER_MODE_NORMAL));
+
+                  layout.addView(btnOff, new LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT));
+                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
+                      LinearLayout.LayoutParams.MATCH_PARENT,
+                      LinearLayout.LayoutParams.WRAP_CONTENT);
+                  lp.topMargin = 36;
+                  layout.addView(btnOn, lp);
+
+                  setContentView(layout);
+                  initDisplayListener();
+              }
+
+              private void initDisplayListener() {
                   mDisplayListener = new DisplayManager.DisplayListener() {
                       @Override public void onDisplayAdded(int displayId) {}
                       @Override public void onDisplayRemoved(int displayId) {
@@ -134,6 +119,7 @@ jobs:
                   DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
                   dm.registerDisplayListener(mDisplayListener, null);
               }
+
               private IBinder getShizukuBinder() {
                   try {
                       Class<?> clz = Class.forName("rikka.shizuku.Shizuku");
@@ -141,6 +127,7 @@ jobs:
                       return (IBinder) method.invoke(null);
                   } catch (Exception e) { return null; }
               }
+
               private void setDisplayPowerMode(int mode) {
                   IBinder binder = getShizukuBinder();
                   if (binder == null) {
@@ -163,39 +150,26 @@ jobs:
               }
           }' > $WORK_DIR/src/com/m5ctrl/MainActivity.java
 
-          # 无障碍服务
-          echo 'package com.m5ctrl;
-          import android.accessibilityservice.AccessibilityService;
-          import android.view.accessibility.AccessibilityEvent;
-          public class M5AccessibilityService extends AccessibilityService {
-              @Override public void onAccessibilityEvent(AccessibilityEvent event) {}
-              @Override public void onInterrupt() {}
-          }' > $WORK_DIR/src/com/m5ctrl/M5AccessibilityService.java
-
-          # 安装 SDK
+          # 安装 Android SDK 工具
           mkdir -p $ANDROID_HOME/cmdline-tools
           wget -q -O $WORK_DIR/cmdline-tools.zip \
             https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
           unzip -q $WORK_DIR/cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
           mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
+
           yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses > /dev/null 2>&1
-          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "platforms;android-33" "build-tools;33.0.2"
+          $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
+            "platforms;android-33" "build-tools;33.0.2"
 
-          # 编译资源 + 生成 R.java
-          mkdir -p $BUILD_DIR/res $BUILD_DIR/gen
-          $BUILD_TOOLS/aapt2 compile -o $BUILD_DIR/res/layout.flat $WORK_DIR/res/layout/main.xml
-          $BUILD_TOOLS/aapt2 compile -o $BUILD_DIR/res/xml.flat $WORK_DIR/res/xml/accessibility.xml
-          $BUILD_TOOLS/aapt2 compile -o $BUILD_DIR/res/values.flat $WORK_DIR/res/values/strings.xml
-
-          $BUILD_TOOLS/aapt2 link \
-            -o $BUILD_DIR/base.apk \
+          # 打包资源和清单（仅字符串资源，无布局）
+          $BUILD_TOOLS/aapt package -f \
+            -M $WORK_DIR/AndroidManifest.xml \
+            -S $WORK_DIR/res \
             -I $ANDROID_HOME/platforms/android-33/android.jar \
-            --manifest $WORK_DIR/AndroidManifest.xml \
-            --java $BUILD_DIR/gen \
-            --auto-add-overlay \
-            $BUILD_DIR/res/layout.flat $BUILD_DIR/res/xml.flat $BUILD_DIR/res/values.flat
+            -J $BUILD_DIR/gen \
+            -F $BUILD_DIR/base.apk
 
-          # 编译 Java
+          # 编译 Java 代码
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
@@ -215,12 +189,17 @@ jobs:
 
           # 签名
           keytool -genkey -keystore $WORK_DIR/test.keystore -alias test \
-            -keyalg RSA -keysize 2048 -storepass 123456 -keypass 123456 \
+            -keyalg RSA -keysize 2048 \
+            -storepass 123456 -keypass 123456 \
             -dname "CN=test" -noprompt
+
           $BUILD_TOOLS/apksigner sign \
-            --ks $WORK_DIR/test.keystore --ks-key-alias test \
-            --ks-pass pass:123456 --key-pass pass:123456 \
-            --out $WORK_DIR/m5ctrl-unroot.apk $BUILD_DIR/base.apk
+            --ks $WORK_DIR/test.keystore \
+            --ks-key-alias test \
+            --ks-pass pass:123456 \
+            --key-pass pass:123456 \
+            --out $WORK_DIR/m5ctrl-unroot.apk \
+            $BUILD_DIR/base.apk
 
           echo "编译完成：m5ctrl-unroot.apk"
 
