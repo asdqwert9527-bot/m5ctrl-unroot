@@ -24,7 +24,52 @@ jobs:
           BUILD_TOOLS=$ANDROID_HOME/build-tools/33.0.2
           mkdir -p $BUILD_DIR
 
-          echo "=== 资源目录校验 ==="
+          # 重建资源文件，彻底规避文件名异常
+          rm -rf $WORK_DIR/res
+          mkdir -p $WORK_DIR/res/layout
+          mkdir -p $WORK_DIR/res/xml
+          mkdir -p $WORK_DIR/res/values
+
+          cat > $WORK_DIR/res/layout/main.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+    <Button
+        android:id="@+id/btn_screen_off"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="关闭手机屏幕" />
+    <Button
+        android:id="@+id/btn_screen_on"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="点亮手机屏幕" />
+</LinearLayout>
+EOF
+
+          cat > $WORK_DIR/res/xml/accessibility.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeAllMask"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/app_name"
+    android:packageNames="*" />
+EOF
+
+          cat > $WORK_DIR/res/values/strings.xml << 'EOF'
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">M5Ctrl</string>
+</resources>
+EOF
+
+          echo "=== 重建后资源目录 ==="
           ls -laR $WORK_DIR/res/
 
           # 1. 下载 Shizuku 依赖
@@ -43,7 +88,7 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;33.0.2"
 
-          # 3. 打包资源（aapt直接扫描整个res目录，规避单文件识别问题）
+          # 3. 打包资源
           echo "打包资源..."
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
