@@ -18,9 +18,9 @@ jobs:
 
       - name: Run build script
         run: |
+          pwd
           ls -la
-          chmod +x build.sh
-          ./build.sh
+          bash build.sh
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
