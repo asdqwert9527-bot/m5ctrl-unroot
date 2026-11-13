@@ -27,9 +27,9 @@ jobs:
           rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml $WORK_DIR/libs
           mkdir -p $WORK_DIR/src/com/m5ctrl $WORK_DIR/libs
 
-          # 下载 Shizuku API 依赖
+          # 下载 Shizuku API 依赖（修正链接）
           wget -q -O $WORK_DIR/libs/shizuku-api.jar \
-            https://repo1.maven.org/maven2/dev/rikka/shizuku/shizuku-api/13.1.2/shizuku-api-13.1.2.jar
+            https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
 
           # 1. 生成 AndroidManifest.xml
           echo '<?xml version="1.0" encoding="utf-8"?>
@@ -54,18 +54,21 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java（直接调用 Shizuku 官方 API）
+          # 2. 生成 MainActivity.java（修正Shizuku调用逻辑）
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
           import android.hardware.display.DisplayManager;
           import android.os.Bundle;
           import android.os.IBinder;
+          import android.os.Parcel;
+          import android.os.RemoteException;
           import android.util.Log;
           import android.view.View;
           import android.widget.Button;
           import android.widget.LinearLayout;
           import android.widget.Toast;
+          import java.lang.reflect.Field;
           import java.lang.reflect.Method;
           import rikka.shizuku.Shizuku;
           public class MainActivity extends Activity
@@ -77,6 +80,8 @@ jobs:
               private static final int POWER_MODE_OFF = 0;
               private static final int POWER_MODE_NORMAL = 2;
               private static final int REQUEST_CODE = 1001;
+              private Integer mSetDisplayPowerModeCode = null;
+              private IBinder mDisplayBinder = null;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
@@ -104,11 +109,33 @@ jobs:
                   DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
                   dm.registerDisplayListener(this, null);
 
+                  // 初始化系统服务与方法编号
+                  initDisplayService();
+
                   // 申请 Shizuku 权限
-                  if (Shizuku.isPreV11() || Shizuku.getVersion() < 11) {
-                      Toast.makeText(this, "Shizuku 版本过低", Toast.LENGTH_SHORT).show();
-                  } else if (Shizuku.checkSelfPermission() != 0) {
-                      Shizuku.requestPermission(REQUEST_CODE);
+                  try {
+                      if (Shizuku.isPreV11() || Shizuku.getVersion() < 11) {
+                          Toast.makeText(this, "Shizuku 版本过低", Toast.LENGTH_SHORT).show();
+                      } else if (Shizuku.checkSelfPermission() != 0) {
+                          Shizuku.requestPermission(REQUEST_CODE);
+                      }
+                  } catch (Exception e) {
+                      Toast.makeText(this, "未检测到 Shizuku 服务", Toast.LENGTH_SHORT).show();
+                  }
+              }
+
+              private void initDisplayService() {
+                  try {
+                      Class<?> smClz = Class.forName("android.os.ServiceManager");
+                      Method getService = smClz.getMethod("getService", String.class);
+                      mDisplayBinder = (IBinder) getService.invoke(null, "display");
+
+                      Class<?> stubClz = Class.forName("android.hardware.display.IDisplayManager$Stub");
+                      Field field = stubClz.getDeclaredField("TRANSACTION_setDisplayPowerMode");
+                      field.setAccessible(true);
+                      mSetDisplayPowerModeCode = field.getInt(null);
+                  } catch (Exception e) {
+                      Log.e("M5Ctrl", "初始化服务失败", e);
                   }
               }
 
@@ -118,11 +145,15 @@ jobs:
                       Toast.makeText(this, "请先在 Shizuku 中授权并启动服务", Toast.LENGTH_SHORT).show();
                       return;
                   }
+                  if (mDisplayBinder == null || mSetDisplayPowerModeCode == null) {
+                      Toast.makeText(this, "系统服务初始化失败", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
                   CharSequence text = ((Button)v).getText();
                   if ("关闭手机屏幕".equals(text)) {
-                      setDisplayPowerMode(POWER_MODE_OFF);
+                      setDisplayPowerMode(0, POWER_MODE_OFF);
                   } else {
-                      setDisplayPowerMode(POWER_MODE_NORMAL);
+                      setDisplayPowerMode(0, POWER_MODE_NORMAL);
                   }
               }
 
@@ -151,19 +182,22 @@ jobs:
               @Override
               public void run() {
                   if (mCurrentTask == TASK_RESTORE_SCREEN) {
-                      setDisplayPowerMode(POWER_MODE_NORMAL);
+                      setDisplayPowerMode(0, POWER_MODE_NORMAL);
                       Toast.makeText(MainActivity.this, "眼镜拔出，屏幕已恢复", Toast.LENGTH_SHORT).show();
                   }
               }
 
-              private void setDisplayPowerMode(int mode) {
+              private void setDisplayPowerMode(int displayId, int mode) {
                   try {
-                      IBinder binder = Shizuku.getBinder();
-                      Class<?> stubClz = Class.forName("android.hardware.display.IDisplayManager$Stub");
-                      Method asInterface = stubClz.getMethod("asInterface", IBinder.class);
-                      Object dm = asInterface.invoke(null, binder);
-                      Method setMode = dm.getClass().getMethod("setDisplayPowerMode", int.class, int.class);
-                      setMode.invoke(dm, 0, mode);
+                      Parcel data = Parcel.obtain();
+                      Parcel reply = Parcel.obtain();
+                      data.writeInterfaceToken("android.hardware.display.IDisplayManager");
+                      data.writeInt(displayId);
+                      data.writeInt(mode);
+                      Shizuku.transactRemote(mDisplayBinder, mSetDisplayPowerModeCode, data, reply, 0);
+                      reply.recycle();
+                      data.recycle();
+
                       mScreenOffState = (mode == POWER_MODE_OFF);
                       String msg = mode == POWER_MODE_OFF ? "手机屏幕已关闭" : "手机屏幕已点亮";
                       Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
