@@ -22,6 +22,12 @@ jobs:
           export BUILD_DIR=$PWD/build
           mkdir -p $BUILD_DIR
 
+          # 打印目录结构，定位文件路径问题
+          echo "=== 当前目录文件 ==="
+          ls -la
+          echo "=== res 目录结构 ==="
+          find res -type f
+
           # 1. 下载 Shizuku 依赖
           mkdir -p lib
           curl -sL -o lib/shizuku-api.jar \
