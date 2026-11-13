@@ -27,8 +27,8 @@ jobs:
           rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml $WORK_DIR/libs
           mkdir -p $WORK_DIR/src/com/m5ctrl $WORK_DIR/libs
 
-          # 下载 Shizuku API（AAR格式，解压出jar依赖）
-          wget -O $WORK_DIR/libs/shizuku-api.aar \
+          # 下载 Shizuku API
+          wget -q -O $WORK_DIR/libs/shizuku-api.aar \
             https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.aar
           unzip -p $WORK_DIR/libs/shizuku-api.aar classes.jar > $WORK_DIR/libs/shizuku-api.jar
 
@@ -55,7 +55,7 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java
+          # 2. 生成 MainActivity.java（修正Shizuku调用方式）
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -63,6 +63,7 @@ jobs:
           import android.os.Bundle;
           import android.os.IBinder;
           import android.os.Parcel;
+          import android.os.RemoteException;
           import android.util.Log;
           import android.view.View;
           import android.widget.Button;
@@ -71,6 +72,7 @@ jobs:
           import java.lang.reflect.Field;
           import java.lang.reflect.Method;
           import rikka.shizuku.Shizuku;
+          import rikka.shizuku.ShizukuBinderWrapper;
           public class MainActivity extends Activity
               implements View.OnClickListener, DisplayManager.DisplayListener, Runnable {
 
@@ -193,7 +195,11 @@ jobs:
                       data.writeInterfaceToken("android.hardware.display.IDisplayManager");
                       data.writeInt(displayId);
                       data.writeInt(mode);
-                      Shizuku.transactRemote(mDisplayBinder, mSetDisplayPowerModeCode, data, reply, 0);
+                      
+                      // 用ShizukuBinderWrapper包装系统Binder，以Shizuku权限执行调用
+                      IBinder wrappedBinder = new ShizukuBinderWrapper(mDisplayBinder);
+                      wrappedBinder.transact(mSetDisplayPowerModeCode, data, reply, 0);
+                      
                       reply.recycle();
                       data.recycle();
 
@@ -225,7 +231,7 @@ jobs:
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 5. 编译Java（引入 Shizuku 依赖）
+          # 5. 编译Java
           echo "=== 编译Java代码 ==="
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
@@ -235,7 +241,7 @@ jobs:
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 6. 生成DEX（包含依赖类）
+          # 6. 生成DEX
           echo "=== 生成DEX ==="
           mkdir -p $BUILD_DIR/dex
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
