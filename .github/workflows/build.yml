@@ -24,9 +24,12 @@ jobs:
           BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0
           mkdir -p $BUILD_DIR
 
-          # 清理原有文件
-          rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml
-          mkdir -p $WORK_DIR/src/com/m5ctrl
+          rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml $WORK_DIR/libs
+          mkdir -p $WORK_DIR/src/com/m5ctrl $WORK_DIR/libs
+
+          # 下载 Shizuku API 依赖
+          wget -q -O $WORK_DIR/libs/shizuku-api.jar \
+            https://repo1.maven.org/maven2/dev/rikka/shizuku/shizuku-api/13.1.2/shizuku-api-13.1.2.jar
 
           # 1. 生成 AndroidManifest.xml
           echo '<?xml version="1.0" encoding="utf-8"?>
@@ -35,6 +38,9 @@ jobs:
               android:versionCode="1"
               android:versionName="1.0">
               <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />
+              <queries>
+                  <package android:name="rikka.shizuku" />
+              </queries>
               <application
                   android:label="M5Ctrl"
                   android:icon="@android:drawable/ic_menu_info_details"
@@ -48,7 +54,7 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 生成 MainActivity.java（无任何内部类，单class文件，规避d8解析bug）
+          # 2. 生成 MainActivity.java（直接调用 Shizuku 官方 API）
           echo 'package com.m5ctrl;
           import android.app.Activity;
           import android.content.Context;
@@ -61,6 +67,7 @@ jobs:
           import android.widget.LinearLayout;
           import android.widget.Toast;
           import java.lang.reflect.Method;
+          import rikka.shizuku.Shizuku;
           public class MainActivity extends Activity
               implements View.OnClickListener, DisplayManager.DisplayListener, Runnable {
 
@@ -69,6 +76,7 @@ jobs:
               private boolean mScreenOffState = false;
               private static final int POWER_MODE_OFF = 0;
               private static final int POWER_MODE_NORMAL = 2;
+              private static final int REQUEST_CODE = 1001;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
@@ -95,15 +103,34 @@ jobs:
 
                   DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
                   dm.registerDisplayListener(this, null);
+
+                  // 申请 Shizuku 权限
+                  if (Shizuku.isPreV11() || Shizuku.getVersion() < 11) {
+                      Toast.makeText(this, "Shizuku 版本过低", Toast.LENGTH_SHORT).show();
+                  } else if (Shizuku.checkSelfPermission() != 0) {
+                      Shizuku.requestPermission(REQUEST_CODE);
+                  }
               }
 
               @Override
               public void onClick(View v) {
+                  if (!isShizukuReady()) {
+                      Toast.makeText(this, "请先在 Shizuku 中授权并启动服务", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
                   CharSequence text = ((Button)v).getText();
                   if ("关闭手机屏幕".equals(text)) {
                       setDisplayPowerMode(POWER_MODE_OFF);
                   } else {
                       setDisplayPowerMode(POWER_MODE_NORMAL);
+                  }
+              }
+
+              private boolean isShizukuReady() {
+                  try {
+                      return Shizuku.pingBinder() && Shizuku.checkSelfPermission() == 0;
+                  } catch (Exception e) {
+                      return false;
                   }
               }
 
@@ -129,21 +156,9 @@ jobs:
                   }
               }
 
-              private IBinder getShizukuBinder() {
-                  try {
-                      Class<?> clz = Class.forName("rikka.shizuku.Shizuku");
-                      Method method = clz.getMethod("getBinder");
-                      return (IBinder) method.invoke(null);
-                  } catch (Exception e) { return null; }
-              }
-
               private void setDisplayPowerMode(int mode) {
-                  IBinder binder = getShizukuBinder();
-                  if (binder == null) {
-                      Toast.makeText(this, "请先开启 Shizuku", Toast.LENGTH_SHORT).show();
-                      return;
-                  }
                   try {
+                      IBinder binder = Shizuku.getBinder();
                       Class<?> stubClz = Class.forName("android.hardware.display.IDisplayManager$Stub");
                       Method asInterface = stubClz.getMethod("asInterface", IBinder.class);
                       Object dm = asInterface.invoke(null, binder);
@@ -177,26 +192,25 @@ jobs:
             -I $ANDROID_HOME/platforms/android-33/android.jar \
             -F $BUILD_DIR/base.apk
 
-          # 5. 编译Java（强制传统字符串拼接，最简字节码）
+          # 5. 编译Java（引入 Shizuku 依赖）
           echo "=== 编译Java代码 ==="
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
             -XDstringConcat=inline \
             -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
+            -classpath $WORK_DIR/libs/shizuku-api.jar \
             -d $BUILD_DIR/classes \
             $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 校验仅生成单个class文件
-          ls -la $BUILD_DIR/classes/com/m5ctrl/
-
-          # 6. 生成DEX（关闭脱糖，减少处理复杂度）
+          # 6. 生成DEX（包含依赖类）
           echo "=== 生成DEX ==="
           mkdir -p $BUILD_DIR/dex
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
             --min-api 24 \
             --no-desugaring \
             --lib $ANDROID_HOME/platforms/android-33/android.jar \
-            $BUILD_DIR/classes/com/m5ctrl/*.class
+            $BUILD_DIR/classes/com/m5ctrl/*.class \
+            $WORK_DIR/libs/shizuku-api.jar
 
           # 7. 组装APK
           echo "=== 组装APK ==="
