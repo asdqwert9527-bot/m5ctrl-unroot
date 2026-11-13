@@ -177,14 +177,21 @@ jobs:
               public void onInterrupt() {}
           }' > $WORK_DIR/src/com/m5ctrl/M5AccessibilityService.java
 
-          # 1. 下载 Shizuku 依赖
+          # 1. 下载 Shizuku 依赖（带重试+完整性校验）
           mkdir -p $WORK_DIR/lib
-          curl -sL -o $WORK_DIR/lib/shizuku-api.jar \
+          curl -sL --retry 3 --retry-delay 2 -o $WORK_DIR/lib/shizuku-api.jar \
             https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.2/api-13.1.2.jar
+          
+          # 校验 jar 包完整性
+          if ! unzip -t $WORK_DIR/lib/shizuku-api.jar > /dev/null 2>&1; then
+              echo "Shizuku 依赖下载损坏，终止编译"
+              exit 1
+          fi
+          echo "Shizuku 依赖校验通过"
 
           # 2. 安装 Android SDK 工具
           mkdir -p $ANDROID_HOME/cmdline-tools
-          curl -sL -o $WORK_DIR/cmdline-tools.zip \
+          curl -sL --retry 3 -o $WORK_DIR/cmdline-tools.zip \
             https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
           unzip -q $WORK_DIR/cmdline-tools.zip -d $ANDROID_HOME/cmdline-tools
           mv $ANDROID_HOME/cmdline-tools/cmdline-tools $ANDROID_HOME/cmdline-tools/latest
