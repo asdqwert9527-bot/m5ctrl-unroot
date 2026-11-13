@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install dependencies
+      - name: Install deps
         run: |
           sudo apt-get update
           sudo apt-get install -y unzip wget openjdk-17-jdk
@@ -24,33 +24,30 @@ jobs:
           BUILD_TOOLS=$ANDROID_HOME/build-tools/34.0.0
           mkdir -p $BUILD_DIR
 
-          rm -rf $WORK_DIR/res $WORK_DIR/src $WORK_DIR/AndroidManifest.xml $WORK_DIR/libs
-          mkdir -p $WORK_DIR/src/com/m5ctrl $WORK_DIR/src/moe/shizuku/server $WORK_DIR/libs
+          rm -rf $WORK_DIR/src $WORK_DIR/res $WORK_DIR/AndroidManifest.xml $WORK_DIR/libs
+          mkdir -p $WORK_DIR/src/com/m5ctrl $WORK_DIR/res/values $WORK_DIR/libs
 
-          # 下载官方 Shizuku 依赖
-          wget -q -O $WORK_DIR/libs/shizuku-api.aar \
-            https://repo1.maven.org/maven2/dev/rikka/shizuku/api/13.1.5/api-13.1.5.aar
-          wget -q -O $WORK_DIR/libs/shizuku-provider.aar \
-            https://repo1.maven.org/maven2/dev/rikka/shizuku/provider/13.1.5/provider-13.1.5.aar
-          
-          unzip -p $WORK_DIR/libs/shizuku-api.aar classes.jar > $WORK_DIR/libs/shizuku-api.jar
-          unzip -p $WORK_DIR/libs/shizuku-provider.aar classes.jar > $WORK_DIR/libs/shizuku-provider.jar
+          # 官方三件套依赖 api + aidl + provider
+          for a in api aidl provider; do
+            wget -q -O $WORK_DIR/libs/shizuku-$a.aar \
+              https://repo1.maven.org/maven2/dev/rikka/shizuku/$a/13.1.5/$a-13.1.5.aar
+            unzip -p $WORK_DIR/libs/shizuku-$a.aar classes.jar > $WORK_DIR/libs/shizuku-$a.jar
+          done
+          ls -lh $WORK_DIR/libs/
 
-          # 1. 生成 AndroidManifest.xml（按官方规范注册 Provider）
           echo '<?xml version="1.0" encoding="utf-8"?>
           <manifest xmlns:android="http://schemas.android.com/apk/res/android"
               package="com.m5ctrl"
               android:versionCode="1"
               android:versionName="1.0">
               <uses-sdk android:minSdkVersion="24" android:targetSdkVersion="33" />
+              <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
               <queries>
-                  <package android:name="rikka.shizuku" />
+                  <package android:name="moe.shizuku.privileged.api" />
               </queries>
               <application
-                  android:label="M5Ctrl"
-                  android:icon="@android:drawable/ic_menu_info_details"
+                  android:label="@string/app_name"
                   android:allowBackup="false">
-                  
                   <provider
                       android:name="rikka.shizuku.ShizukuProvider"
                       android:authorities="com.m5ctrl.shizuku"
@@ -58,7 +55,6 @@ jobs:
                       android:enabled="true"
                       android:exported="true"
                       android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
-
                   <activity android:name=".MainActivity" android:exported="true">
                       <intent-filter>
                           <action android:name="android.intent.action.MAIN" />
@@ -68,254 +64,298 @@ jobs:
               </application>
           </manifest>' > $WORK_DIR/AndroidManifest.xml
 
-          # 2. 补全缺失的旧版兼容类，解决类加载闪退
-          echo 'package moe.shizuku.server;
-          import android.os.IBinder;
-          import android.os.IInterface;
-          import android.os.Binder;
-          public interface IShizukuApplication extends IInterface {
-              public static abstract class Stub extends Binder implements IShizukuApplication {
-                  public static IShizukuApplication asInterface(IBinder obj) { return null; }
-                  @Override public IBinder asBinder() { return null; }
-              }
-          }' > $WORK_DIR/src/moe/shizuku/server/IShizukuApplication.java
+          echo '<?xml version="1.0" encoding="utf-8"?>
+          <resources>
+              <string name="app_name">M5Ctrl</string>
+          </resources>' > $WORK_DIR/res/values/strings.xml
 
-          # 3. 生成 MainActivity（官方规范生命周期 + 屏幕控制逻辑）
           echo 'package com.m5ctrl;
+
           import android.app.Activity;
           import android.content.Context;
+          import android.content.pm.PackageManager;
           import android.hardware.display.DisplayManager;
           import android.os.Bundle;
           import android.os.IBinder;
           import android.os.Parcel;
+          import android.os.PowerManager;
           import android.util.Log;
+          import android.view.Display;
           import android.view.View;
           import android.widget.Button;
           import android.widget.LinearLayout;
+          import android.widget.ScrollView;
+          import android.widget.TextView;
           import android.widget.Toast;
-          import java.lang.reflect.Field;
           import java.lang.reflect.Method;
           import rikka.shizuku.Shizuku;
           import rikka.shizuku.ShizukuBinderWrapper;
+          import rikka.shizuku.SystemServiceHelper;
 
-          public class MainActivity extends Activity
-              implements View.OnClickListener, DisplayManager.DisplayListener, Runnable,
-                         Shizuku.OnBinderReceivedListener, Shizuku.OnBinderDeadListener,
-                         Shizuku.OnRequestPermissionResultListener {
+          public class MainActivity extends Activity implements View.OnClickListener,
+                  Shizuku.OnBinderReceivedListener,
+                  Shizuku.OnBinderDeadListener,
+                  Shizuku.OnRequestPermissionResultListener {
 
-              private static final int TASK_RESTORE_SCREEN = 1;
-              private int mCurrentTask = 0;
-              private boolean mScreenOffState = false;
-              private static final int POWER_MODE_OFF = 0;
-              private static final int POWER_MODE_NORMAL = 2;
-              private static final int REQUEST_CODE = 1001;
-              private Integer mSetDisplayPowerModeCode = null;
-              private IBinder mDisplayBinder = null;
-              private String mInitError = "";
-              private boolean mShizukuReady = false;
+              private static final String TAG = "M5Ctrl";
+              private static final int REQ_PERM = 1001;
+              private TextView mLog;
+              private boolean mBinderReady = false;
 
               @Override
               protected void onCreate(Bundle savedInstanceState) {
                   super.onCreate(savedInstanceState);
-                  LinearLayout layout = new LinearLayout(this);
-                  layout.setOrientation(LinearLayout.VERTICAL);
-                  layout.setPadding(48, 48, 48, 48);
+                  ScrollView sv = new ScrollView(this);
+                  LinearLayout root = new LinearLayout(this);
+                  root.setOrientation(LinearLayout.VERTICAL);
+                  root.setPadding(32, 32, 32, 32);
+                  sv.addView(root);
 
-                  Button btnOff = new Button(this);
-                  btnOff.setText("关闭手机屏幕");
-                  btnOff.setOnClickListener(this);
+                  Button bDisp = new Button(this);
+                  bDisp.setText("1. 列出当前屏幕");
+                  bDisp.setTag("disp");
+                  bDisp.setOnClickListener(this);
 
-                  Button btnOn = new Button(this);
-                  btnOn.setText("点亮手机屏幕");
-                  btnOn.setOnClickListener(this);
+                  Button bOff = new Button(this);
+                  bOff.setText("2. 关闭内屏（保留外屏）");
+                  bOff.setTag("off");
+                  bOff.setOnClickListener(this);
 
-                  LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                      LinearLayout.LayoutParams.MATCH_PARENT,
-                      LinearLayout.LayoutParams.WRAP_CONTENT);
-                  layout.addView(btnOff, lp);
-                  lp.topMargin = 36;
-                  layout.addView(btnOn, lp);
-                  setContentView(layout);
+                  Button bOn = new Button(this);
+                  bOn.setText("3. 恢复内屏");
+                  bOn.setTag("on");
+                  bOn.setOnClickListener(this);
 
-                  try {
-                      DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
-                      dm.registerDisplayListener(this, null);
-                  } catch (Throwable e) {
-                      Log.e("M5Ctrl", "注册监听失败", e);
-                  }
+                  Button bSleep = new Button(this);
+                  bSleep.setText("4. 对照：整机休眠");
+                  bSleep.setTag("sleep");
+                  bSleep.setOnClickListener(this);
 
-                  initDisplayService();
+                  root.addView(bDisp);
+                  root.addView(bOff);
+                  root.addView(bOn);
+                  root.addView(bSleep);
 
-                  Shizuku.addBinderReceivedListener(this);
+                  mLog = new TextView(this);
+                  mLog.setTextSize(11);
+                  mLog.setText("init...\n");
+                  root.addView(mLog);
+                  setContentView(sv);
+
+                  Shizuku.addBinderReceivedListenerSticky(this);
                   Shizuku.addBinderDeadListener(this);
                   Shizuku.addRequestPermissionResultListener(this);
-
-                  checkBinderState();
+                  append("pingBinder=" + safePing());
               }
 
               @Override
               protected void onDestroy() {
-                  super.onDestroy();
                   Shizuku.removeBinderReceivedListener(this);
                   Shizuku.removeBinderDeadListener(this);
                   Shizuku.removeRequestPermissionResultListener(this);
+                  super.onDestroy();
+              }
+
+              private boolean safePing() {
+                  try {
+                      return Shizuku.pingBinder();
+                  } catch (Throwable t) {
+                      return false;
+                  }
+              }
+
+              private void append(final String s) {
+                  Log.i(TAG, s);
+                  runOnUiThread(new Runnable() {
+                      @Override
+                      public void run() {
+                          mLog.append(s + "\n");
+                      }
+                  });
               }
 
               @Override
               public void onBinderReceived() {
-                  mShizukuReady = true;
-                  Toast.makeText(this, "Shizuku 已连接", Toast.LENGTH_SHORT).show();
-                  checkAndRequestPermission();
+                  mBinderReady = true;
+                  append("binder已连接 ver=" + safeVer());
+                  requestPermIfNeeded();
               }
 
               @Override
               public void onBinderDead() {
-                  mShizukuReady = false;
-                  Toast.makeText(this, "Shizuku 连接已断开", Toast.LENGTH_SHORT).show();
+                  mBinderReady = false;
+                  append("binder已断开");
               }
 
               @Override
               public void onRequestPermissionResult(int requestCode, int grantResult) {
-                  if (requestCode == REQUEST_CODE) {
-                      if (grantResult == 0) {
-                          Toast.makeText(this, "Shizuku 授权成功", Toast.LENGTH_SHORT).show();
-                      } else {
-                          Toast.makeText(this, "Shizuku 授权被拒绝", Toast.LENGTH_SHORT).show();
-                      }
-                  }
+                  append(grantResult == PackageManager.PERMISSION_GRANTED ? "授权成功" : "授权被拒绝");
               }
 
-              private void checkBinderState() {
+              private int safeVer() {
                   try {
-                      if (Shizuku.pingBinder()) {
-                          mShizukuReady = true;
-                          checkAndRequestPermission();
-                      } else {
-                          Toast.makeText(this, "未检测到 Shizuku 服务，请先启动 Shizuku", Toast.LENGTH_LONG).show();
-                      }
-                  } catch (Throwable e) {
-                      Toast.makeText(this, "未检测到 Shizuku 服务", Toast.LENGTH_LONG).show();
-                      Log.e("M5Ctrl", "检测失败", e);
+                      return Shizuku.getVersion();
+                  } catch (Throwable t) {
+                      return -1;
                   }
               }
 
-              private void checkAndRequestPermission() {
+              private void requestPermIfNeeded() {
                   try {
                       if (Shizuku.isPreV11()) {
-                          Toast.makeText(this, "Shizuku 版本过低，需 v11+", Toast.LENGTH_LONG).show();
+                          append("Shizuku版本过低(<11)");
                           return;
                       }
-                      if (Shizuku.checkSelfPermission() != 0) {
-                          Shizuku.requestPermission(REQUEST_CODE);
+                      if (Shizuku.checkSelfPermission() != PackageManager.PERMISSION_GRANTED) {
+                          append("申请权限...");
+                          Shizuku.requestPermission(REQ_PERM);
+                      } else {
+                          append("权限已授予");
                       }
-                  } catch (Throwable e) {
-                      Log.e("M5Ctrl", "权限检查失败", e);
+                  } catch (Throwable t) {
+                      append("权限异常: " + t);
                   }
               }
 
-              private void initDisplayService() {
+              private boolean ready() {
                   try {
-                      Class<?> smClz = Class.forName("android.os.ServiceManager");
-                      Method getService = smClz.getMethod("getService", String.class);
-                      mDisplayBinder = (IBinder) getService.invoke(null, "display");
-
-                      Class<?> stubClz = Class.forName("android.hardware.display.IDisplayManager$Stub");
-                      Field field = stubClz.getDeclaredField("TRANSACTION_setDisplayPowerMode");
-                      field.setAccessible(true);
-                      mSetDisplayPowerModeCode = field.getInt(null);
-                  } catch (Throwable e) {
-                      mInitError = "服务初始化失败: " + e.getMessage();
-                      Log.e("M5Ctrl", "初始化服务失败", e);
+                      return mBinderReady && Shizuku.pingBinder()
+                              && Shizuku.checkSelfPermission() == PackageManager.PERMISSION_GRANTED;
+                  } catch (Throwable t) {
+                      return false;
                   }
               }
 
               @Override
               public void onClick(View v) {
-                  try {
-                      if (!mShizukuReady) {
-                          Toast.makeText(this, "Shizuku 未连接", Toast.LENGTH_SHORT).show();
-                          return;
-                      }
-                      if (Shizuku.checkSelfPermission() != 0) {
-                          Toast.makeText(this, "请先在 Shizuku 中授权", Toast.LENGTH_SHORT).show();
-                          Shizuku.requestPermission(REQUEST_CODE);
-                          return;
-                      }
-                      if (mDisplayBinder == null || mSetDisplayPowerModeCode == null) {
-                          Toast.makeText(this, mInitError, Toast.LENGTH_LONG).show();
-                          return;
-                      }
-                      CharSequence text = ((Button)v).getText();
-                      if ("关闭手机屏幕".equals(text)) {
-                          setDisplayPowerMode(0, POWER_MODE_OFF);
-                      } else {
-                          setDisplayPowerMode(0, POWER_MODE_NORMAL);
-                      }
-                  } catch (Throwable e) {
-                      Toast.makeText(this, "点击出错: " + e.getMessage(), Toast.LENGTH_LONG).show();
-                      Log.e("M5Ctrl", "点击失败", e);
+                  String tag = (String) v.getTag();
+                  if ("disp".equals(tag)) {
+                      dumpDisplays();
+                      return;
+                  }
+                  if (!ready()) {
+                      append("Shizuku未就绪");
+                      Toast.makeText(this, "Shizuku未就绪", Toast.LENGTH_SHORT).show();
+                      return;
+                  }
+                  if ("off".equals(tag)) {
+                      setPower(Display.STATE_OFF);
+                  } else if ("on".equals(tag)) {
+                      setPower(Display.STATE_ON);
+                  } else if ("sleep".equals(tag)) {
+                      goToSleep();
                   }
               }
 
-              @Override
-              public void onDisplayAdded(int displayId) {}
-
-              @Override
-              public void onDisplayRemoved(int displayId) {
+              private void dumpDisplays() {
                   try {
-                      if (displayId == 20 && mScreenOffState) {
-                          mCurrentTask = TASK_RESTORE_SCREEN;
-                          runOnUiThread(this);
+                      DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+                      Display[] ds = dm.getDisplays();
+                      append("---- 屏幕 " + ds.length + " 个 ----");
+                      for (Display d : ds) {
+                          append("id=" + d.getDisplayId() + " name=" + d.getName()
+                                  + " state=" + stateName(d.getState())
+                                  + " flags=0x" + Integer.toHexString(d.getFlags()));
                       }
-                  } catch (Throwable e) {
-                      Log.e("M5Ctrl", "拔屏回调失败", e);
+                  } catch (Throwable t) {
+                      append("列出屏幕失败: " + t);
                   }
               }
 
-              @Override
-              public void onDisplayChanged(int displayId) {}
+              private String stateName(int s) {
+                  if (s == Display.STATE_OFF) return "OFF";
+                  if (s == Display.STATE_ON) return "ON";
+                  if (s == Display.STATE_DOZE) return "DOZE";
+                  if (s == Display.STATE_DOZE_SUSPEND) return "DOZE_SUSPEND";
+                  if (s == Display.STATE_ON_SUSPEND) return "ON_SUSPEND";
+                  if (s == Display.STATE_VR) return "VR";
+                  return "?" + s;
+              }
 
-              @Override
-              public void run() {
+              private long internalPhysicalId() {
                   try {
-                      if (mCurrentTask == TASK_RESTORE_SCREEN) {
-                          setDisplayPowerMode(0, POWER_MODE_NORMAL);
-                          Toast.makeText(MainActivity.this, "眼镜拔出，屏幕已恢复", Toast.LENGTH_SHORT).show();
-                      }
-                  } catch (Throwable e) {
-                      Log.e("M5Ctrl", "回调执行失败", e);
+                      DisplayManager dm = (DisplayManager) getSystemService(Context.DISPLAY_SERVICE);
+                      Display d = dm.getDisplay(Display.DEFAULT_DISPLAY);
+                      Method m = Display.class.getMethod("getPhysicalDisplayId");
+                      Object r = m.invoke(d);
+                      return r == null ? -1L : ((Long) r).longValue();
+                  } catch (Throwable t) {
+                      append("getPhysicalDisplayId 失败: " + t);
+                      return -1L;
                   }
               }
 
-              private void setDisplayPowerMode(int displayId, int mode) {
+              private IBinder physicalToken(long id) {
                   try {
+                      Class<?> sc = Class.forName("android.view.SurfaceControl");
+                      Method m = sc.getMethod("getPhysicalDisplayToken", long.class);
+                      return (IBinder) m.invoke(null, Long.valueOf(id));
+                  } catch (Throwable t) {
+                      append("getPhysicalDisplayToken 失败: " + t);
+                      return null;
+                  }
+              }
+
+              private void setPower(int mode) {
+                  long pid = internalPhysicalId();
+                  append("内屏 physicalId=" + pid);
+                  IBinder token = physicalToken(pid);
+                  if (token == null) {
+                      append("拿不到 displayToken，无法继续");
+                      return;
+                  }
+                  append("token=" + token);
+                  try {
+                      Class<?> sc = Class.forName("android.view.SurfaceControl");
+                      Method m = sc.getMethod("setDisplayPowerMode", IBinder.class, int.class);
+                      m.invoke(null, token, Integer.valueOf(mode));
+                      append("方案1(本进程) 成功 mode=" + mode);
+                      Toast.makeText(this, "方案1已执行", Toast.LENGTH_SHORT).show();
+                      return;
+                  } catch (Throwable t) {
+                      append("方案1(本进程) 失败: " + t);
+                  }
+                  try {
+                      Integer code = SystemServiceHelper.getTransactionCode(
+                              "android.ui.ISurfaceComposer", "setDisplayPowerMode");
+                      append("setDisplayPowerMode 事务号=" + code);
+                      IBinder sf = SystemServiceHelper.getSystemService("SurfaceFlinger");
+                      if (sf == null || code == null || code.intValue() < 0) {
+                          append("SurfaceFlinger 不可用，终止");
+                          return;
+                      }
+                      IBinder wrapped = new ShizukuBinderWrapper(sf);
                       Parcel data = Parcel.obtain();
                       Parcel reply = Parcel.obtain();
-                      data.writeInterfaceToken("android.hardware.display.IDisplayManager");
-                      data.writeInt(displayId);
+                      data.writeInterfaceToken("android.ui.ISurfaceComposer");
+                      data.writeStrongBinder(token);
                       data.writeInt(mode);
-                      
-                      IBinder wrappedBinder = new ShizukuBinderWrapper(mDisplayBinder);
-                      boolean result = wrappedBinder.transact(mSetDisplayPowerModeCode, data, reply, 0);
-                      
-                      reply.recycle();
+                      boolean ok = wrapped.transact(code.intValue(), data, reply, 0);
+                      reply.readException();
                       data.recycle();
+                      reply.recycle();
+                      append("方案2(Shizuku转发) 返回=" + ok + " mode=" + mode);
+                      Toast.makeText(this, "方案2已执行", Toast.LENGTH_SHORT).show();
+                  } catch (Throwable t) {
+                      append("方案2(Shizuku转发) 失败: " + t);
+                      Toast.makeText(this, "两种方式都失败，见日志", Toast.LENGTH_LONG).show();
+                  }
+              }
 
-                      if (result) {
-                          mScreenOffState = (mode == POWER_MODE_OFF);
-                          String msg = mode == POWER_MODE_OFF ? "手机屏幕已关闭" : "手机屏幕已点亮";
-                          Toast.makeText(this, msg, Toast.LENGTH_SHORT).show();
-                      } else {
-                          Toast.makeText(this, "调用失败，系统返回失败", Toast.LENGTH_LONG).show();
-                      }
-                  } catch (Throwable e) {
-                      Log.e("M5Ctrl", "执行失败", e);
-                      Toast.makeText(this, "执行失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+              private void goToSleep() {
+                  try {
+                      PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+                      Method m = pm.getClass().getMethod("goToSleep", long.class);
+                      m.setAccessible(true);
+                      m.invoke(pm, Long.valueOf(0L));
+                      append("goToSleep 已执行");
+                  } catch (Throwable t) {
+                      append("goToSleep 失败: " + t);
+                      Toast.makeText(this, "goToSleep失败", Toast.LENGTH_SHORT).show();
                   }
               }
           }' > $WORK_DIR/src/com/m5ctrl/MainActivity.java
 
-          # 4. 安装 Android SDK
           mkdir -p $ANDROID_HOME/cmdline-tools
           wget -q -O $WORK_DIR/cmdline-tools.zip \
             https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
@@ -326,44 +366,39 @@ jobs:
           $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager \
             "platforms;android-33" "build-tools;34.0.0"
 
-          # 5. 打包清单
-          echo "=== 打包基础APK ==="
+          AJ=$ANDROID_HOME/platforms/android-33/android.jar
+
+          echo "=== aapt 打包 ==="
           $BUILD_TOOLS/aapt package -f \
             -M $WORK_DIR/AndroidManifest.xml \
-            -I $ANDROID_HOME/platforms/android-33/android.jar \
+            -S $WORK_DIR/res \
+            -I $AJ \
             -F $BUILD_DIR/base.apk
 
-          # 6. 编译Java（包含兼容类）
-          echo "=== 编译Java代码 ==="
+          echo "=== javac 编译 ==="
           mkdir -p $BUILD_DIR/classes
           javac -source 1.8 -target 1.8 \
-            -XDstringConcat=inline \
-            -bootclasspath $ANDROID_HOME/platforms/android-33/android.jar \
-            -classpath "$WORK_DIR/libs/shizuku-api.jar:$WORK_DIR/libs/shizuku-provider.jar" \
+            -bootclasspath $AJ \
+            -classpath "$WORK_DIR/libs/shizuku-api.jar:$WORK_DIR/libs/shizuku-aidl.jar:$WORK_DIR/libs/shizuku-provider.jar" \
             -d $BUILD_DIR/classes \
-            $WORK_DIR/src/com/m5ctrl/*.java \
-            $WORK_DIR/src/moe/shizuku/server/*.java
+            $WORK_DIR/src/com/m5ctrl/*.java
 
-          # 7. 生成DEX
-          echo "=== 生成DEX ==="
+          echo "=== d8 脱糖（关键：不加 --no-desugaring）==="
           mkdir -p $BUILD_DIR/dex
           $BUILD_TOOLS/d8 --output $BUILD_DIR/dex \
             --min-api 24 \
-            --no-desugaring \
-            --lib $ANDROID_HOME/platforms/android-33/android.jar \
+            --lib $AJ \
             $BUILD_DIR/classes/com/m5ctrl/*.class \
-            $BUILD_DIR/classes/moe/shizuku/server/*.class \
             $WORK_DIR/libs/shizuku-api.jar \
+            $WORK_DIR/libs/shizuku-aidl.jar \
             $WORK_DIR/libs/shizuku-provider.jar
 
-          # 8. 组装APK
-          echo "=== 组装APK ==="
+          echo "=== 组装 APK ==="
           cd $BUILD_DIR
           zip -j base.apk dex/classes.dex
           cd $WORK_DIR
 
-          # 9. 签名
-          echo "=== 签名APK ==="
+          echo "=== 签名 ==="
           keytool -genkey -keystore $WORK_DIR/test.keystore -alias test \
             -keyalg RSA -keysize 2048 \
             -storepass 123456 -keypass 123456 \
@@ -377,7 +412,6 @@ jobs:
             --out $WORK_DIR/m5ctrl-unroot.apk \
             $BUILD_DIR/base.apk
 
-          echo "=== 编译完成 ==="
           ls -lh $WORK_DIR/m5ctrl-unroot.apk
 
       - name: Upload APK
